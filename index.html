@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ロト6 予測ツール</title>
+  <link rel="stylesheet" href="css/style.css" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+</head>
+<body>
+
+<!-- ── ヘッダー ── -->
+<header>
+  <h1>🎯 ロト6 予測ツール</h1>
+  <div class="data-count" id="data-count">読み込み中...</div>
+</header>
+
+<!-- ── メイン ── -->
+<main>
+
+  <!-- アクションバー -->
+  <div class="card">
+    <div class="action-bar">
+      <button class="btn btn-secondary" id="btn-bulk">
+        📋 過去データ一括登録
+      </button>
+      <button class="btn btn-secondary" id="btn-add-one">
+        ➕ 最新番号を追加
+      </button>
+      <button class="btn btn-primary btn-lg" id="btn-predict" style="margin-left:auto">
+        🔮 予測する
+      </button>
+    </div>
+  </div>
+
+  <!-- 統計サマリー -->
+  <div class="card" id="stats-section" style="display:none">
+    <div class="card-title"><span class="icon">📊</span> データ概要</div>
+    <div class="stats-grid" id="stats-grid"></div>
+  </div>
+
+  <!-- タブ：分析 -->
+  <div class="card" id="analysis-section" style="display:none">
+    <div class="card-title"><span class="icon">🔍</span> 分析</div>
+    <div class="tabs">
+      <button class="tab-btn active" data-tab="tab-freq">出現頻度</button>
+      <button class="tab-btn" data-tab="tab-sum">合計値推移</button>
+      <button class="tab-btn" data-tab="tab-zone">ゾーン分布</button>
+      <button class="tab-btn" data-tab="tab-consec">連番分析</button>
+    </div>
+
+    <!-- 出現頻度 -->
+    <div class="tab-content active" id="tab-freq">
+      <div class="chart-grid">
+        <div class="chart-card full-width">
+          <h3>数字別 出現回数（1〜43）</h3>
+          <div class="chart-wrapper">
+            <canvas id="chart-freq"></canvas>
+          </div>
+        </div>
+      </div>
+      <div class="freq-grid" id="freq-grid" style="margin-top:16px"></div>
+    </div>
+
+    <!-- 合計値推移 -->
+    <div class="tab-content" id="tab-sum">
+      <div class="chart-grid">
+        <div class="chart-card full-width">
+          <h3>合計値 推移（直近100回）</h3>
+          <div class="chart-wrapper tall">
+            <canvas id="chart-sum"></canvas>
+          </div>
+        </div>
+        <div class="chart-card">
+          <h3>合計値 分布（ヒストグラム）</h3>
+          <div class="chart-wrapper">
+            <canvas id="chart-sum-hist"></canvas>
+          </div>
+        </div>
+        <div class="chart-card">
+          <h3>統計情報</h3>
+          <div id="sum-stats" style="margin-top:8px"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ゾーン分布 -->
+    <div class="tab-content" id="tab-zone">
+      <div class="chart-grid">
+        <div class="chart-card full-width">
+          <h3>ゾーン別 出現数（直近50回）</h3>
+          <div class="chart-wrapper tall">
+            <canvas id="chart-zone"></canvas>
+          </div>
+        </div>
+        <div class="chart-card">
+          <h3>平均ゾーン分布</h3>
+          <div class="chart-wrapper">
+            <canvas id="chart-zone-avg"></canvas>
+          </div>
+        </div>
+        <div class="chart-card">
+          <h3>ゾーン別 出現統計</h3>
+          <div id="zone-stats" style="margin-top:8px"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 連番分析 -->
+    <div class="tab-content" id="tab-consec">
+      <div class="chart-grid">
+        <div class="chart-card">
+          <h3>連番ペア数 分布</h3>
+          <div class="chart-wrapper">
+            <canvas id="chart-consec"></canvas>
+          </div>
+        </div>
+        <div class="chart-card">
+          <h3>連番あり/なし 比率</h3>
+          <div class="chart-wrapper">
+            <canvas id="chart-consec-pie"></canvas>
+          </div>
+        </div>
+      </div>
+      <div id="consec-stats" style="margin-top:16px"></div>
+    </div>
+  </div>
+
+  <!-- 予測結果 -->
+  <div class="card" id="predict-section" style="display:none">
+    <div class="card-title"><span class="icon">🏆</span> 予測結果</div>
+    <div class="prediction-grid" id="prediction-grid"></div>
+  </div>
+
+  <!-- 空状態 -->
+  <div class="card" id="empty-state">
+    <div class="empty-state">
+      <div class="icon">📭</div>
+      <p>データがありません。<br>「過去データ一括登録」からデータを登録してください。</p>
+    </div>
+  </div>
+
+</main>
+
+<!-- ── モーダル：一括登録 ── -->
+<div class="modal-overlay" id="modal-bulk">
+  <div class="modal">
+    <h2>📋 過去データ一括登録</h2>
+    <p>
+      サイトからコピーしたデータをそのまま貼り付けてください。<br>
+      ボーナス数字・賞金情報は自動で除外されます。
+    </p>
+    <textarea
+      id="bulk-input"
+      placeholder="例：
+第2092回	2026/4/9	08	13	27	36	37	43	03	0	該当なし	5億円
+第2091回	2026/4/6	06	16	21	25	28	43	09	0	...
+（複数行まとめて貼り付けOK）"
+    ></textarea>
+    <div id="bulk-preview" style="margin-top:12px; max-height:200px; overflow-y:auto"></div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" id="btn-bulk-cancel">キャンセル</button>
+      <button class="btn btn-secondary" id="btn-bulk-parse">👀 プレビュー</button>
+      <button class="btn btn-success" id="btn-bulk-save" disabled>
+        💾 保存する
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ── モーダル：1件追加 ── -->
+<div class="modal-overlay" id="modal-add">
+  <div class="modal">
+    <h2>➕ 最新当選番号を追加</h2>
+    <p>最新の当選番号を入力してください。</p>
+    <div class="form-grid">
+      <div class="form-group" style="grid-column: 1 / -1; display:grid; grid-template-columns:1fr 1fr; gap:12px">
+        <div class="form-group">
+          <label>回号</label>
+          <input type="number" id="add-round" placeholder="例: 2093" min="1" />
+        </div>
+        <div class="form-group">
+          <label>日付</label>
+          <input type="text" id="add-date" placeholder="例: 2026/4/13" />
+        </div>
+      </div>
+      <div class="form-group">
+        <label>数字①</label>
+        <input type="number" id="add-n1" min="1" max="43" />
+      </div>
+      <div class="form-group">
+        <label>数字②</label>
+        <input type="number" id="add-n2" min="1" max="43" />
+      </div>
+      <div class="form-group">
+        <label>数字③</label>
+        <input type="number" id="add-n3" min="1" max="43" />
+      </div>
+      <div class="form-group">
+        <label>数字④</label>
+        <input type="number" id="add-n4" min="1" max="43" />
+      </div>
+      <div class="form-group">
+        <label>数字⑤</label>
+        <input type="number" id="add-n5" min="1" max="43" />
+      </div>
+      <div class="form-group">
+        <label>数字⑥</label>
+        <input type="number" id="add-n6" min="1" max="43" />
+      </div>
+    </div>
+    <div id="add-error" style="color:var(--hot); font-size:0.85rem; margin-top:8px; min-height:20px"></div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" id="btn-add-cancel">キャンセル</button>
+      <button class="btn btn-success" id="btn-add-save">💾 追加する</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── トースト ── -->
+<div id="toast-container"></div>
+
+<script src="js/app.js"></script>
+</body>
+</html>
