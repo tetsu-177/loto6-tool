@@ -907,7 +907,7 @@ function updateUI() {
 
   renderStats(data);
   renderFreqGrid(fd);
-  renderFrequencyChart(fd);
+  renderFreqChart(fd);
   renderSumCharts(sd);
   renderSumStats(sd);
   renderZoneCharts(zd);
