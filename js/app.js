@@ -301,11 +301,15 @@ function predictStatistical(data) {
   return {...best, pattern:"B", label:"統計スコアリング予測", method:"StatisticalScoring"};
 }
 
-/** Pattern C: 推移確率予測（合計値考慮なし・合計値波分析付き） */
+/** Pattern C: 推移確率予測（合計値80〜180 ・ 合計値バケット遷移分析付き） */
 function predictTransition(data) {
   if(data.length < 5) return predictRuleBased(data);
 
-  // ── 推移行列を構築 ──────────────────────────
+  // ── Pattern C 専用 合計値レンジ ──────────────
+  const SUM_MIN_C = 80;
+  const SUM_MAX_C = 180;
+
+  // ── 数字の推移行列を構築 ──────────────────────
   const tc = {};
   for(let i=1;i<=43;i++) { tc[i]={}; }
 
@@ -328,118 +332,194 @@ function predictTransition(data) {
     }
   }
 
-  // ── 合計値の波分析 ──────────────────────────
-  // 直近10回の合計値で線形回帰（傾きを計算）
-  const WAVE_N    = 10;
-  const recentSums= data.slice(-WAVE_N).map(d => d.total);
-  const wn        = recentSums.length;
-  const xMean     = (wn - 1) / 2;
-  const yMean     = recentSums.reduce((a,b)=>a+b,0) / wn;
-  let   num=0, den=0;
-  recentSums.forEach((y,x)=>{
-    num += (x - xMean) * (y - yMean);
-    den += (x - xMean) ** 2;
+  // ── 合計値バケット遷移分析 ───────────────────
+  // 5帯に分割して「この帯の後は何帯が来やすいか」を集計
+  const BUCKETS = [
+    { label:"80〜99",   min:80,  max:99  },
+    { label:"100〜119", min:100, max:119 },
+    { label:"120〜139", min:120, max:139 },
+    { label:"140〜159", min:140, max:159 },
+    { label:"160〜180", min:160, max:180 },
+  ];
+
+  function getBucket(total) {
+    const idx = BUCKETS.findIndex(b => total >= b.min && total <= b.max);
+    // 範囲外は最近傍に補正
+    if(idx >= 0) return idx;
+    return total < 80 ? 0 : 4;
+  }
+
+  // バケット間の遷移カウント（範囲外データは除外）
+  const stc = Array.from({length:5}, ()=>new Array(5).fill(0));
+  for(let i=0;i<data.length-1;i++){
+    const cb = getBucket(data[i].total);
+    const nb = getBucket(data[i+1].total);
+    stc[cb][nb]++;
+  }
+
+  // 遷移確率を正規化
+  const stp = stc.map(row => {
+    const tot = row.reduce((a,b)=>a+b,0);
+    return tot > 0 ? row.map(v=>v/tot) : new Array(5).fill(0.2);
   });
-  const slope = den > 0 ? num / den : 0;
-  // slope < 0 → 直近は下降中 → 次は上がりやすい → 大きい数字を優遇
-  // slope > 0 → 直近は上昇中 → 次は下がりやすい → 小さい数字を優遇
-  // -1〜+1 に正規化（5点/回を基準）
-  const waveNorm = Math.min(Math.max(slope / 5, -1), 1);
 
-  // 直近5回平均と全体平均の差
-  const last5avg  = data.slice(-5).reduce((s,d)=>s+d.total,0) / 5;
-  const allAvg    = data.reduce((s,d)=>s+d.total,0) / data.length;
-  const sumDiff   = last5avg - allAvg;
-  // sumDiff < 0 → 最近の合計値が低め → 上昇方向を予測
+  // ── 直近10回の合計値の傾き（線形回帰） ─────────
+  const WAVE_N     = 10;
+  const recentSums = data.slice(-WAVE_N).map(d => d.total);
+  const wn         = recentSums.length;
+  const xMean      = (wn - 1) / 2;
+  const yMean      = recentSums.reduce((a,b)=>a+b,0) / wn;
+  let   numR=0, denR=0;
+  recentSums.forEach((y,x)=>{
+    numR += (x - xMean) * (y - yMean);
+    denR += (x - xMean) ** 2;
+  });
+  const slope = denR > 0 ? numR / denR : 0;
 
-  // ── 各数字のスコア計算 ──────────────────────
-  const lastDraw    = data[data.length - 1];
-  const candScores  = {};
+  // ── 次の合計値帯を予測 ───────────────────────
+  const lastTotal        = data[data.length-1].total;
+  const currentBucket    = getBucket(lastTotal);
+  const nextBucketProbs  = stp[currentBucket];
+
+  // 最も確率が高い次バケット
+  const topNextBucket    = nextBucketProbs
+    .map((p,i)=>({...BUCKETS[i], p, i}))
+    .sort((a,b)=>b.p-a.p)[0];
+
+  // 期待合計値（重み付き平均）
+  const expectedSum = nextBucketProbs.reduce((s,p,i)=>{
+    const center = (BUCKETS[i].min + BUCKETS[i].max) / 2;
+    return s + p * center;
+  }, 0);
+
+  // ── 各数字のスコア計算 ───────────────────────
+  const lastDraw   = data[data.length-1];
+  const candScores = {};
 
   for(let n=1;n<=43;n++){
-    // 遷移確率（前回の数字から次に来やすいか）
+    // 遷移確率スコア（前回の番号から次に来やすいか）
     const tScore = lastDraw.numbers.reduce((sum, prev) => {
       return sum + (tp[prev][n] || 0);
     }, 0);
 
-    // 合計値の波による補正
-    // waveNorm < 0（下降中）→ 大きい数字(n/43が高い)を優遇
-    // waveNorm > 0（上昇中）→ 小さい数字(n/43が低い)を優遇
-    const waveBonus = -waveNorm * ((n / 43) - 0.5) * 0.4;
+    // 期待合計値ボーナス
+    // expectedSum が高い → 大きい数字を優遇
+    // expectedSum が低い → 小さい数字を優遇
+    const normTarget  = (expectedSum - 130) / 50; // -1〜+1
+    const waveBonus   = normTarget * ((n / 43) - 0.5) * 0.35;
 
     candScores[n] = tScore + waveBonus;
   }
 
   const ranked = Object.entries(candScores)
-    .sort((a,b) => b[1] - a[1])
-    .map(([n,s]) => ({ num: parseInt(n), tScore: s }));
+    .sort((a,b) => b[1]-a[1])
+    .map(([n,s])=>({ num:parseInt(n), tScore:s }));
 
-  // ── 合計値以外の緩いルールチェック ──────────
-  // 合計値は一切考慮しない。ゾーンが3以上カバーされていればOK
+  // ── ソフトルール（合計値80〜180 + ゾーン3以上） ──
   function passesSoftRules(nums) {
-    const s      = [...nums].sort((a,b)=>a-b);
-    const covZones = Object.values(CFG.ZONES)
-      .filter(zr => s.some(n => zr.includes(n))).length;
-    return covZones >= 3;
+    const s     = [...nums].sort((a,b)=>a-b);
+    const total = s.reduce((a,b)=>a+b,0);
+    if(total < SUM_MIN_C || total > SUM_MAX_C) return false;
+    const cov = Object.values(CFG.ZONES)
+      .filter(zr => s.some(n=>zr.includes(n))).length;
+    return cov >= 3;
   }
 
-  // ── 上位20個から最も確率が高い6個を選出 ─────
-  const top20   = ranked.slice(0, 20).map(x => x.num);
-  let   best    = null;
+  // ── 上位20から遷移確率最大の6個を探索 ─────────
+  const top20      = ranked.slice(0,20).map(x=>x.num);
+  let   best       = null;
   let   bestTScore = -Infinity;
 
-  for(let i=0; i<50000; i++){
-    const shuffled = [...top20].sort(() => Math.random() - 0.5);
-    const combo    = shuffled.slice(0, 6);
+  for(let i=0;i<50000;i++){
+    const shuffled = [...top20].sort(()=>Math.random()-0.5);
+    const combo    = shuffled.slice(0,6);
     if(new Set(combo).size < 6) continue;
     if(!passesSoftRules(combo)) continue;
 
-    // 遷移スコアの合計のみで評価（合計値スコアは使わない）
-    const tScore = combo.reduce((s,n) => s + (candScores[n]||0), 0);
-
+    const tScore = combo.reduce((s,n)=>s+(candScores[n]||0),0);
     if(tScore > bestTScore){
-      bestTScore      = tScore;
-      const sorted    = [...combo].sort((a,b)=>a-b);
-      const total     = sorted.reduce((a,b)=>a+b,0);
-      const ev        = sorted.filter(n=>n%2===0).length;
-      const { pairs } = countConsec(sorted);
-      const cov       = Object.values(CFG.ZONES)
-        .filter(zr => sorted.some(n=>zr.includes(n))).length;
-      best = {
-        numbers: sorted, total,
-        score:   tScore / 6,
-        evenCnt: ev, oddCnt: 6-ev,
-        pairs,   coveredZones: cov,
-      };
+      bestTScore   = tScore;
+      const sorted = [...combo].sort((a,b)=>a-b);
+      const total  = sorted.reduce((a,b)=>a+b,0);
+      const ev     = sorted.filter(n=>n%2===0).length;
+      const {pairs}= countConsec(sorted);
+      const cov    = Object.values(CFG.ZONES)
+        .filter(zr=>sorted.some(n=>zr.includes(n))).length;
+      best = { numbers:sorted, total, score:tScore/6, evenCnt:ev, oddCnt:6-ev, pairs, coveredZones:cov };
     }
   }
 
-  // フォールバック（条件を満たす組み合わせが見つからない場合）
+  // ── フォールバック①：上位10総当たり ─────────────
   if(!best){
-    const combo     = ranked.slice(0,6).map(x=>x.num).sort((a,b)=>a-b);
-    const total     = combo.reduce((a,b)=>a+b,0);
-    const ev        = combo.filter(n=>n%2===0).length;
-    const { pairs } = countConsec(combo);
-    const cov       = Object.values(CFG.ZONES)
-      .filter(zr => combo.some(n=>zr.includes(n))).length;
+    const top10 = ranked.slice(0,10).map(x=>x.num);
+    outer:
+    for(let a=0;a<top10.length;a++)
+    for(let b=a+1;b<top10.length;b++)
+    for(let c=b+1;c<top10.length;c++)
+    for(let d=c+1;d<top10.length;d++)
+    for(let e=d+1;e<top10.length;e++)
+    for(let f=e+1;f<top10.length;f++){
+      const combo  = [top10[a],top10[b],top10[c],top10[d],top10[e],top10[f]];
+      const sorted = [...combo].sort((a,b)=>a-b);
+      const total  = sorted.reduce((a,b)=>a+b,0);
+      if(total < SUM_MIN_C || total > SUM_MAX_C) continue;
+      const ev     = sorted.filter(n=>n%2===0).length;
+      const {pairs}= countConsec(sorted);
+      const cov    = Object.values(CFG.ZONES)
+        .filter(zr=>sorted.some(n=>zr.includes(n))).length;
+      best = { numbers:sorted, total, score:0, evenCnt:ev, oddCnt:6-ev, pairs, coveredZones:cov };
+      break outer;
+    }
+  }
+
+  // ── フォールバック②：ランダムで合計値範囲内を探す ──
+  if(!best){
+    const fm  = buildFreqMap(data);
+    const wts = CFG.NUMBERS.map(n=>Math.max(fm[n],1));
+    for(let i=0;i<10000;i++){
+      const combo  = weightedSample6(wts);
+      if(new Set(combo).size < 6) continue;
+      const sorted = [...combo].sort((a,b)=>a-b);
+      const total  = sorted.reduce((a,b)=>a+b,0);
+      if(total < SUM_MIN_C || total > SUM_MAX_C) continue;
+      const ev     = sorted.filter(n=>n%2===0).length;
+      const {pairs}= countConsec(sorted);
+      const cov    = Object.values(CFG.ZONES)
+        .filter(zr=>sorted.some(n=>zr.includes(n))).length;
+      best = { numbers:sorted, total, score:0, evenCnt:ev, oddCnt:6-ev, pairs, coveredZones:cov };
+      break;
+    }
+  }
+
+  // ── フォールバック③：最終手段 ──────────────────
+  if(!best){
+    const combo  = ranked.slice(0,6).map(x=>x.num).sort((a,b)=>a-b);
+    const total  = combo.reduce((a,b)=>a+b,0);
+    const ev     = combo.filter(n=>n%2===0).length;
+    const {pairs}= countConsec(combo);
+    const cov    = Object.values(CFG.ZONES)
+      .filter(zr=>combo.some(n=>zr.includes(n))).length;
     best = { numbers:combo, total, score:0, evenCnt:ev, oddCnt:6-ev, pairs, coveredZones:cov };
   }
 
-  // ── 波の状態テキスト ─────────────────────────
+  // ── 表示テキスト生成 ─────────────────────────
   const waveDir =
-    slope < -3 ? "📉 急下降 → 上昇予測" :
-    slope < -1 ? "↘ 下降中 → 上昇傾向" :
-    slope >  3 ? "📈 急上昇 → 下降予測" :
-    slope >  1 ? "↗ 上昇中 → 下降傾向" :
-                 "➡ 横ばい";
+    slope < -3 ? "📉 急下降→上昇予測" :
+    slope < -1 ? "↘ 下降中→上昇傾向" :
+    slope >  3 ? "📈 急上昇→下降予測" :
+    slope >  1 ? "↗ 上昇中→下降傾向" : "➡ 横ばい";
 
-  const waveTxt = `合計波: ${waveDir}（傾き${slope.toFixed(1)} / 直近5回平均${last5avg.toFixed(0)} / 全体平均${allAvg.toFixed(0)}）`;
+  const methodTxt =
+    `${waveDir} | ` +
+    `現在帯:${BUCKETS[currentBucket].label} → ` +
+    `次の予測帯:${topNextBucket.label}(${(topNextBucket.p*100).toFixed(0)}%) | ` +
+    `期待合計値:${expectedSum.toFixed(0)}`;
 
   return {
     ...best,
     pattern: "C",
     label:   "推移確率予測",
-    method:  `TransitionMatrix | ${waveTxt}`,
+    method:  methodTxt,
   };
 }
 
