@@ -1,3 +1,4 @@
+
 /* ============================================================
    app.js - ロト6 予測ツール
    ============================================================ */
@@ -208,8 +209,10 @@ function passesRules(nums) {
   return true;
 }
 
+
 // ============================================================
-// 修正① scoreCombo - プラトー型スコアリング
+// 修正① scoreCombo
+// 連番スコアを 0〜2組すべて高評価のフラット型に変更
 // ============================================================
 function scoreCombo(nums, freqMap, sumMean, sumStd) {
   const s   = [...nums].sort((a,b)=>a-b);
@@ -219,29 +222,32 @@ function scoreCombo(nums, freqMap, sumMean, sumStd) {
   const cov = Object.values(CFG.ZONES)
     .filter(zr=>s.some(n=>zr.includes(n))).length;
 
-  // 出現頻度スコア（中程度が高い）
+  // ── 出現頻度スコア ───────────────────────────
   const avgF = Object.values(freqMap).reduce((a,b)=>a+b,0) / 43;
   const fs   = s.reduce((sum,n) =>
     sum + Math.max(0, 1 - Math.abs(freqMap[n]-avgF) / (avgF+1e-9))
   , 0) / 6;
 
-  // ── プラトー型合計値スコア ──────────────────────
-  // 110〜150 は一律満点（減点なし）
-  // それ以外は距離に応じて徐々に減点（40点幅でゼロまで）
+  // ── プラトー型合計値スコア ────────────────────
+  // 110〜150 は一律満点、範囲外は40点幅で線形減点
   const P_MIN = 110, P_MAX = 150;
   const ss =
     (t >= P_MIN && t <= P_MAX) ? 1.0 :
     t < P_MIN ? Math.max(0, 1 - (P_MIN - t) / 40) :
                 Math.max(0, 1 - (t - P_MAX) / 40);
 
-  // ゾーンスコア
+  // ── ゾーンスコア ─────────────────────────────
   const zs = cov / 5;
 
-  // 連番スコア（1ペアが最高）
+  // ── 連番スコア（フラット型）──────────────────
+  // 実績: 0組〜2組は分散しており全て有効
+  // → 0組:0.88, 1組:1.0, 2組:0.92 でほぼフラット
+  // → 3組以上のみ徐々に減点
   const cs =
-    pairs === 0 ? 0.8 :
-    pairs === 1 ? 1.0 :
-    Math.max(0, 1 - (pairs - 1) * 0.3);
+    pairs === 0 ? 0.88 :
+    pairs === 1 ? 1.00 :
+    pairs === 2 ? 0.92 :
+    Math.max(0, 1 - (pairs - 2) * 0.30);
 
   const score =
     CFG.SCORE_W.freq   * fs +
@@ -256,24 +262,15 @@ function scoreCombo(nums, freqMap, sumMean, sumStd) {
   };
 }
 
-function weightedSample6(weights) {
-  const pool=[...CFG.NUMBERS], w=[...weights], res=[];
-  while(res.length<6) {
-    const tot=w.reduce((a,b)=>a+b,0);
-    let r=Math.random()*tot;
-    for (let i=0;i<pool.length;i++) {
-      r-=w[i];
-      if(r<=0){res.push(pool[i]);pool.splice(i,1);w.splice(i,1);break;}
-    }
-  }
-  return res;
-}
 
 // ────────────────────────────────────────────────────────────
 // 予測ロジック
 // ────────────────────────────────────────────────────────────
 
-/** Pattern A: ルールベース */
+// ============================================================
+// 修正② predictRuleBased - Pattern A
+// scoreCombo の変更のみ反映（ロジック本体は変更なし）
+// ============================================================
 function predictRuleBased(data) {
   const fm   = buildFreqMap(data);
   const sd   = analyzeSum(data);
@@ -286,7 +283,6 @@ function predictRuleBased(data) {
     if(passesRules(c)) cands.push(scoreCombo(c, fm, sd.mean, sd.std));
   }
 
-  // フォールバック（ルール適合なし）
   if(!cands.length){
     for(let i=0; i<5000; i++){
       const c = weightedSample6(wts);
@@ -305,28 +301,29 @@ function predictRuleBased(data) {
 }
 
 
-/** Pattern B: 統計スコアリング */
+// ============================================================
+// 修正③ predictStatistical - Pattern B
+// scoreCombo の変更のみ反映（ロジック本体は変更なし）
+// ============================================================
 function predictStatistical(data) {
   const fm  = buildFreqMap(data);
   const sd  = analyzeSum(data);
   const n   = data.length;
 
-  // 各数字の統計スコア
   const ns = CFG.NUMBERS.map(num => {
     const avg  = (n * 6) / 43;
     const fdev = Math.abs(fm[num] - avg) / (avg + 1e-9);
     const fs   = Math.max(0, 1 - fdev * 0.5);
 
-    // 最後の出現からの間隔
     let intv = n;
     for(let i=data.length-1; i>=0; i--){
       if(data[i].numbers.includes(num)){ intv = data.length-1-i; break; }
     }
     const is = Math.min(intv / 20, 1.0);
 
-    // 直近30回の出現率
     const r30 = data.slice(-30);
-    const rs  = r30.reduce((s,r) => s + (r.numbers.includes(num) ? 1 : 0), 0) / 30;
+    const rs  = r30.reduce((s,r) =>
+      s + (r.numbers.includes(num) ? 1 : 0), 0) / 30;
 
     return { num, score: fs*0.4 + is*0.4 + rs*0.2 };
   });
@@ -347,7 +344,6 @@ function predictStatistical(data) {
     if(!best || r.score > best.score) best = r;
   }
 
-  // フォールバック
   if(!best){
     const combo = ns.slice(0,6).map(x=>x.num);
     best = scoreCombo(combo, fm, sd.mean, sd.std);
@@ -361,7 +357,18 @@ function predictStatistical(data) {
   };
 }
 
-/** Pattern C: 推移確率予測 */
+
+// ============================================================
+// 修正④ predictTransition - Pattern C
+//
+// 変更点:
+//   ・条件③（pairs===1固定）を完全廃止
+//   ・代わりに連番ソフトスコアをtScoreに乗算
+//     → 0組:0.88, 1組:1.0, 2組:0.92 で自然分散
+//   ・平均値に固定するロジックをすべて廃止
+//   ・遷移確率スコアが高い数字を最優先で選択
+//   ・最終的に合計値・連番が期待値付近に収束
+// ============================================================
 function predictTransition(data) {
   if(data.length < 5) return predictRuleBased(data);
 
@@ -411,7 +418,7 @@ function predictTransition(data) {
     return tot > 0 ? row.map(v=>v/tot) : new Array(5).fill(0.2);
   });
 
-  // ── 直近10回の傾き（線形回帰） ───────────────
+  // ── 直近10回の線形回帰（傾き算出） ───────────
   const WAVE_N     = 10;
   const recentSums = data.slice(-WAVE_N).map(d => d.total);
   const wn         = recentSums.length;
@@ -440,118 +447,120 @@ function predictTransition(data) {
   const lastDraw   = data[data.length-1];
   const candScores = {};
   for(let n=1;n<=43;n++){
-    const tScore   = lastDraw.numbers.reduce((sum,prev) =>
+    const tScore    = lastDraw.numbers.reduce((sum,prev) =>
       sum + (tp[prev][n]||0), 0);
-    const normTgt  = (expectedSum-130) / 50;
-    const waveBonus= normTgt * ((n/43)-0.5) * 0.35;
-    candScores[n]  = tScore + waveBonus;
+    const normTgt   = (expectedSum - 130) / 50;
+    const waveBonus = normTgt * ((n/43) - 0.5) * 0.35;
+    candScores[n]   = tScore + waveBonus;
   }
 
   const ranked = Object.entries(candScores)
     .sort((a,b) => b[1]-a[1])
     .map(([n,s]) => ({num:parseInt(n), tScore:s}));
 
-  // ── 4条件チェック関数 ────────────────────────
-  function passesAllConditions(nums, targetBucket) {
-    const s = [...nums].sort((a,b)=>a-b);
+  // ── 連番ソフトスコア（固定なし・フラット型） ──
+  // 0組:0.88, 1組:1.0, 2組:0.92 → 自然分散
+  // 3組以上のみ減点
+  function pairsSoftScore(pairs) {
+    if(pairs === 0) return 0.88;
+    if(pairs === 1) return 1.00;
+    if(pairs === 2) return 0.92;
+    return Math.max(0, 1 - (pairs - 2) * 0.30);
+  }
 
-    // 条件①: 合計値がtopNextBucketの範囲内
+  // ── 2条件のみのハードフィルター ─────────────
+  // ①合計値が予測バケット内
+  // ②前回番号から1〜2個のキャリーオーバー
+  // ③連番→ソフトスコアで自然収束（固定廃止）
+  // ④偶奇バランス
+  function passesHardConditions(nums, targetBucket) {
+    const s     = [...nums].sort((a,b)=>a-b);
     const total = s.reduce((a,b)=>a+b,0);
+
+    // ①合計値フィルター
     if(total < targetBucket.min || total > targetBucket.max) return false;
 
-    // 条件②: 前回番号から1〜2個を含む（carry-over）
+    // ②キャリーオーバー（1〜2個）
     const carry = s.filter(n => lastDraw.numbers.includes(n)).length;
     if(carry < 1 || carry > 2) return false;
 
-    // 条件③: 連番ペアが必ず1組だけ
-    const {pairs} = countConsec(s);
-    if(pairs !== 1) return false;
-
-    // 条件④: 偶奇比が 2:4 / 3:3 / 4:2
-    const ev = s.filter(n=>n%2===0).length;
-    const eoOK = [[2,4],[3,3],[4,2]].some(([e,o])=>e===ev&&o===6-ev);
+    // ④偶奇バランス
+    const ev   = s.filter(n=>n%2===0).length;
+    const eoOK = [[2,4],[3,3],[4,2]].some(([e,o])=>e===ev && o===6-ev);
     if(!eoOK) return false;
 
     return true;
   }
 
-  // ── メイン探索：条件②を保証してからその他を検証 ──
-  const top30 = ranked.slice(0,30).map(x=>x.num);
+  // ── メイン探索 ───────────────────────────────
+  // 遷移確率スコア × 連番ソフトスコア の積が最大の組み合わせを選出
+  const top30      = ranked.slice(0,30).map(x=>x.num);
   let   best       = null;
-  let   bestTScore = -Infinity;
+  let   bestFinal  = -Infinity;
 
   for(let i=0; i<120000; i++){
-    // 条件②を保証: 前回番号から1〜2個を先に確保
-    const carryCount  = Math.random() < 0.5 ? 1 : 2;
-    const shuffLast   = [...lastDraw.numbers].sort(()=>Math.random()-0.5);
-    const carry       = shuffLast.slice(0, carryCount);
+    // キャリーオーバーを先に確保（条件②を保証）
+    const carryCount = Math.random() < 0.5 ? 1 : 2;
+    const shuffLast  = [...lastDraw.numbers].sort(()=>Math.random()-0.5);
+    const carry      = shuffLast.slice(0, carryCount);
 
-    // 残りはtop30からランダムに補充（carryと重複しないもの）
-    const pool      = top30.filter(n => !carry.includes(n));
-    const shuffPool = [...pool].sort(()=>Math.random()-0.5);
-    const fill      = shuffPool.slice(0, 6-carryCount);
-
+    // 残りをtop30から補充
+    const pool       = top30.filter(n => !carry.includes(n));
+    const shuffPool  = [...pool].sort(()=>Math.random()-0.5);
+    const fill       = shuffPool.slice(0, 6-carryCount);
     if(fill.length < 6-carryCount) continue;
 
     const combo = [...carry, ...fill];
     if(new Set(combo).size < 6) continue;
+    if(!passesHardConditions(combo, topNextBucket)) continue;
 
-    if(!passesAllConditions(combo, topNextBucket)) continue;
+    const sorted     = [...combo].sort((a,b)=>a-b);
+    const {pairs}    = countConsec(sorted);
 
-    const tScore = combo.reduce((s,n) => s+(candScores[n]||0), 0);
-    if(tScore > bestTScore){
-      bestTScore   = tScore;
-      const sorted = [...combo].sort((a,b)=>a-b);
-      const total  = sorted.reduce((a,b)=>a+b,0);
-      const ev     = sorted.filter(n=>n%2===0).length;
-      const {pairs}= countConsec(sorted);
-      const cov    = Object.values(CFG.ZONES)
+    // 遷移スコア × 連番ソフトスコア で最終評価
+    const tScore     = combo.reduce((s,n) => s+(candScores[n]||0), 0);
+    const finalScore = tScore * pairsSoftScore(pairs);
+
+    if(finalScore > bestFinal){
+      bestFinal       = finalScore;
+      const total     = sorted.reduce((a,b)=>a+b,0);
+      const ev        = sorted.filter(n=>n%2===0).length;
+      const cov       = Object.values(CFG.ZONES)
         .filter(zr=>sorted.some(n=>zr.includes(n))).length;
       best = {
-        numbers:sorted, total,
-        score:   tScore/6,
+        numbers: sorted, total,
+        score:   finalScore / 6,
         evenCnt: ev, oddCnt: 6-ev,
         pairs,   coveredZones: cov,
       };
     }
   }
 
-  // ── フォールバック①: 条件①②④のみ（連番条件を緩和） ──
+  // ── フォールバック①: ①④のみ（キャリー条件を緩和） ──
   if(!best){
     for(let i=0; i<50000; i++){
-      const carryCount  = Math.random() < 0.5 ? 1 : 2;
-      const shuffLast   = [...lastDraw.numbers].sort(()=>Math.random()-0.5);
-      const carry       = shuffLast.slice(0, carryCount);
-      const pool        = top30.filter(n => !carry.includes(n));
-      const shuffPool   = [...pool].sort(()=>Math.random()-0.5);
-      const fill        = shuffPool.slice(0, 6-carryCount);
-      if(fill.length < 6-carryCount) continue;
-
-      const combo  = [...carry, ...fill];
+      const combo  = weightedSample6(CFG.NUMBERS.map(n=>Math.max(candScores[n]||0, 0.01)));
       if(new Set(combo).size < 6) continue;
-
-      const s     = [...combo].sort((a,b)=>a-b);
-      const total = s.reduce((a,b)=>a+b,0);
+      const sorted = [...combo].sort((a,b)=>a-b);
+      const total  = sorted.reduce((a,b)=>a+b,0);
       if(total < topNextBucket.min || total > topNextBucket.max) continue;
-
-      const ev    = s.filter(n=>n%2===0).length;
-      const eoOK  = [[2,4],[3,3],[4,2]].some(([e,o])=>e===ev&&o===6-ev);
+      const ev     = sorted.filter(n=>n%2===0).length;
+      const eoOK   = [[2,4],[3,3],[4,2]].some(([e,o])=>e===ev && o===6-ev);
       if(!eoOK) continue;
-
-      const {pairs}= countConsec(s);
+      const {pairs}= countConsec(sorted);
       const cov    = Object.values(CFG.ZONES)
-        .filter(zr=>s.some(n=>zr.includes(n))).length;
-
-      const tScore = combo.reduce((sum,n)=>sum+(candScores[n]||0),0);
-      if(!best || tScore > best.score * 6){
-        best = { numbers:s, total, score:tScore/6,
-                 evenCnt:ev, oddCnt:6-ev, pairs, coveredZones:cov };
+        .filter(zr=>sorted.some(n=>zr.includes(n))).length;
+      const tScore = combo.reduce((s,n)=>s+(candScores[n]||0),0);
+      const fs     = tScore * pairsSoftScore(pairs);
+      if(!best || fs > bestFinal){
+        bestFinal = fs;
+        best = { numbers:sorted, total, score:fs/6, evenCnt:ev, oddCnt:6-ev, pairs, coveredZones:cov };
       }
       if(best) break;
     }
   }
 
-  // ── フォールバック②: 合計値範囲のみ保証 ───────────
+  // ── フォールバック②: 合計値範囲のみ保証 ─────────
   if(!best){
     const fm  = buildFreqMap(data);
     const wts = CFG.NUMBERS.map(n => Math.max(fm[n],1));
@@ -565,13 +574,12 @@ function predictTransition(data) {
       const {pairs}= countConsec(sorted);
       const cov    = Object.values(CFG.ZONES)
         .filter(zr=>sorted.some(n=>zr.includes(n))).length;
-      best = { numbers:sorted, total, score:0,
-               evenCnt:ev, oddCnt:6-ev, pairs, coveredZones:cov };
+      best = { numbers:sorted, total, score:0, evenCnt:ev, oddCnt:6-ev, pairs, coveredZones:cov };
       break;
     }
   }
 
-  // ── フォールバック③: 最終手段 ─────────────────────
+  // ── フォールバック③: 最終手段 ─────────────────
   if(!best){
     const combo  = ranked.slice(0,6).map(x=>x.num).sort((a,b)=>a-b);
     const total  = combo.reduce((a,b)=>a+b,0);
@@ -579,11 +587,10 @@ function predictTransition(data) {
     const {pairs}= countConsec(combo);
     const cov    = Object.values(CFG.ZONES)
       .filter(zr=>combo.some(n=>zr.includes(n))).length;
-    best = { numbers:combo, total, score:0,
-             evenCnt:ev, oddCnt:6-ev, pairs, coveredZones:cov };
+    best = { numbers:combo, total, score:0, evenCnt:ev, oddCnt:6-ev, pairs, coveredZones:cov };
   }
 
-  // ── 表示テキスト ──────────────────────────────────
+  // ── 表示テキスト ──────────────────────────────
   const waveDir =
     slope < -3 ? "📉 急下降→上昇予測" :
     slope < -1 ? "↘ 下降中→上昇傾向" :
