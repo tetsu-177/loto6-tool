@@ -262,6 +262,19 @@ function scoreCombo(nums, freqMap, sumMean, sumStd) {
   };
 }
 
+function weightedSample6(weights) {
+  const pool=[...CFG.NUMBERS], w=[...weights], res=[];
+  while(res.length<6) {
+    const tot=w.reduce((a,b)=>a+b,0);
+    let r=Math.random()*tot;
+    for (let i=0;i<pool.length;i++) {
+      r-=w[i];
+      if(r<=0){res.push(pool[i]);pool.splice(i,1);w.splice(i,1);break;}
+    }
+  }
+  return res;
+}
+
 
 // ────────────────────────────────────────────────────────────
 // 予測ロジック
