@@ -180,93 +180,93 @@ function getBallBg(n) {
 // ────────────────────────────────────────────────────────────
 // GitHub API
 // ────────────────────────────────────────────────────────────
-// async function apiGet() {
-//   const r = await fetch("/.netlify/functions/getData");
-//   if (!r.ok) throw new Error(`取得失敗: ${r.status}`);
-//   return await r.json();
-// }
+async function apiGet() {
+  const r = await fetch("/.netlify/functions/getData");
+  if (!r.ok) throw new Error(`取得失敗: ${r.status}`);
+  return await r.json();
+}
 
-// async function apiSave(data, sha) {
-//   const r = await fetch("/.netlify/functions/saveData", {
-//     method:  "POST",
-//     headers: { "Content-Type": "application/json" },
-//     body:    JSON.stringify({ data, sha }),
-//   });
-//   if (!r.ok) throw new Error(`保存失敗: ${r.status}`);
-//   return await r.json();
-// }
+async function apiSave(data, sha) {
+  const r = await fetch("/.netlify/functions/saveData", {
+    method:  "POST",
+    headers: { "Content-Type": "application/json" },
+    body:    JSON.stringify({ data, sha }),
+  });
+  if (!r.ok) throw new Error(`保存失敗: ${r.status}`);
+  return await r.json();
+}
 
-// async function loadData() {
-//   try {
-//     const res  = await apiGet();
-//     STATE.sha  = res.sha;
-//     STATE.data = (res.data.data || []).sort((a,b) => a.round - b.round);
-//     updateUI();
-//   } catch(e) {
-//     console.error(e);
-//     showToast("読み込みエラー: " + e.message, "error");
-//     updateUI();
-//   }
-// }
+async function loadData() {
+  try {
+    const res  = await apiGet();
+    STATE.sha  = res.sha;
+    STATE.data = (res.data.data || []).sort((a,b) => a.round - b.round);
+    updateUI();
+  } catch(e) {
+    console.error(e);
+    showToast("読み込みエラー: " + e.message, "error");
+    updateUI();
+  }
+}
 
-// async function saveData() {
-//   const sorted  = [...STATE.data].sort((a,b) => b.round - a.round);
-//   const payload = {
-//     lastUpdated: sorted[0]?.date || "",
-//     totalRounds: STATE.data.length,
-//     data: sorted,
-//   };
-//   const res  = await apiSave(payload, STATE.sha);
-//   STATE.sha  = res.sha;
-// }
+async function saveData() {
+  const sorted  = [...STATE.data].sort((a,b) => b.round - a.round);
+  const payload = {
+    lastUpdated: sorted[0]?.date || "",
+    totalRounds: STATE.data.length,
+    data: sorted,
+  };
+  const res  = await apiSave(payload, STATE.sha);
+  STATE.sha  = res.sha;
+}
 
 //>>>>>>>>>>>>>>>ここからテスト用
 // ────────────────────────────────────────────────────────────
 // API・データ読み込み（ローカルJSON対応版）
 // ────────────────────────────────────────────────────────────
-async function apiGet() {
-  // ① 取得先を Netlify Functions から ローカルの JSON ファイルに変更
-  const r = await fetch("data/loto6.json");
-  if (!r.ok) throw new Error(`JSON取得失敗: ${r.status} (data/loto6.jsonが見つかりません)`);
-  return await r.json();
-}
+// async function apiGet() {
+//   // ① 取得先を Netlify Functions から ローカルの JSON ファイルに変更
+//   const r = await fetch("data/loto6.json");
+//   if (!r.ok) throw new Error(`JSON取得失敗: ${r.status} (data/loto6.jsonが見つかりません)`);
+//   return await r.json();
+// }
 
-async function apiSave(data, sha) {
-  // ローカル環境ではブラウザから直接ファイルを上書き保存できないため、
-  // エラーを返すようにするか、何もしないようにします。
-  throw new Error("ローカル環境のため保存機能は利用できません。");
-}
+// async function apiSave(data, sha) {
+//   // ローカル環境ではブラウザから直接ファイルを上書き保存できないため、
+//   // エラーを返すようにするか、何もしないようにします。
+//   throw new Error("ローカル環境のため保存機能は利用できません。");
+// }
 
-async function loadData() {
-  try {
-    const res = await apiGet();
-    STATE.sha = null; // ローカルファイル読み込みなのでshaは不要
+// async function loadData() {
+//   try {
+//     const res = await apiGet();
+//     STATE.sha = null; // ローカルファイル読み込みなのでshaは不要
 
-    // ② JSONの構造に合わせて柔軟に配列を取り出す処理
-    // loto6.json の中身が [...] でも {"data": [...]} でも対応できるようにしています
-    let rawData = [];
-    if (Array.isArray(res)) {
-      rawData = res;
-    } else if (res.data && Array.isArray(res.data)) {
-      rawData = res.data;
-    } else if (res.data && res.data.data && Array.isArray(res.data.data)) {
-      rawData = res.data.data;
-    }
+//     // ② JSONの構造に合わせて柔軟に配列を取り出す処理
+//     // loto6.json の中身が [...] でも {"data": [...]} でも対応できるようにしています
+//     let rawData = [];
+//     if (Array.isArray(res)) {
+//       rawData = res;
+//     } else if (res.data && Array.isArray(res.data)) {
+//       rawData = res.data;
+//     } else if (res.data && res.data.data && Array.isArray(res.data.data)) {
+//       rawData = res.data.data;
+//     }
 
-    STATE.data = rawData.sort((a,b) => a.round - b.round);
-    updateUI();
-  } catch(e) {
-    console.error(e);
-    showToast("読み込みエラー: " + e.message, "error");
-    updateUI(); // エラー時は空データとしてUIを更新
-  }
-}
+//     STATE.data = rawData.sort((a,b) => a.round - b.round);
+//     updateUI();
+//   } catch(e) {
+//     console.error(e);
+//     showToast("読み込みエラー: " + e.message, "error");
+//     updateUI(); // エラー時は空データとしてUIを更新
+//   }
+// }
 
-async function saveData() {
-  // ③ ブラウザからローカルのJSONは書き換えられないため、アラートを出して終了します
-  showToast("ブラウザからのデータ保存はローカル環境ではできません。", "error");
-  console.warn("保存機能を使用するには、Netlifyなどのサーバー環境が必要です。");
-}
+// async function saveData() {
+//   // ③ ブラウザからローカルのJSONは書き換えられないため、アラートを出して終了します
+//   showToast("ブラウザからのデータ保存はローカル環境ではできません。", "error");
+//   console.warn("保存機能を使用するには、Netlifyなどのサーバー環境が必要です。");
+// }
 //>>>>>>>>>>>>>>>ここまでテスト用
 
 // ────────────────────────────────────────────────────────────
