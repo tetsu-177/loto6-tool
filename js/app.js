@@ -22,11 +22,117 @@ const CFG = {
   SCORE_W: { freq:0.30, sum:0.30, zone:0.20, consec:0.20 },
 };
 
+// ============================================================
+// PredictionHistory - 予測スナップショット管理
+// localStorage にJSONとして永続保存する
+// ============================================================
+const PredictionHistory = {
+
+  STORAGE_KEY: "loto6_prediction_history",
+  MAX_RECORDS: 100,
+
+  // ── 全履歴を取得 ─────────────────────────────────────────
+  getAll() {
+    try {
+      return JSON.parse(localStorage.getItem(this.STORAGE_KEY) || "[]");
+    } catch(e) {
+      console.warn("PredictionHistory.getAll エラー:", e.message);
+      return [];
+    }
+  },
+
+  // ── 特定の targetRound の予測を取得 ──────────────────────
+  getByRound(round) {
+    return this.getAll().find(h => h.targetRound === round) || null;
+  },
+
+  // ── スナップショット保存（同一 targetRound は上書き） ─────
+  save(predictions, latestRound) {
+    const targetRound = latestRound + 1;
+    const all         = this.getAll();
+
+    // 同一 targetRound を上書き
+    const existIdx = all.findIndex(h => h.targetRound === targetRound);
+
+    const snapshot = {
+      targetRound,
+      predictedAt: new Date().toISOString(),
+      basedOnRound: latestRound,
+      predictions: predictions.map(p => ({
+        pattern: p.pattern,
+        label:   p.label,
+        method:  p.method,
+        numbers: [...p.numbers],
+        total:   p.total,
+        evenCnt: p.evenCnt,
+        oddCnt:  p.oddCnt,
+        pairs:   p.pairs,
+        score:   p.score,
+        coveredZones: p.coveredZones,
+      })),
+    };
+
+    if(existIdx >= 0) {
+      all[existIdx] = snapshot;
+      console.log(`PredictionHistory: 第${targetRound}回の予測を上書き保存`);
+    } else {
+      all.push(snapshot);
+      console.log(`PredictionHistory: 第${targetRound}回の予測を新規保存`);
+    }
+
+    // 古いものから破棄（MAX_RECORDS 件を超えたら）
+    if(all.length > this.MAX_RECORDS) {
+      all.sort((a,b) => a.targetRound - b.targetRound);
+      all.splice(0, all.length - this.MAX_RECORDS);
+    }
+
+    try {
+      localStorage.setItem(this.STORAGE_KEY, JSON.stringify(all));
+      console.log(
+        `PredictionHistory: 保存完了 (${all.length}件 / 最大${this.MAX_RECORDS}件) `,
+        `対象: 第${targetRound}回`
+      );
+    } catch(e) {
+      // localStorage 容量超過時は古い半分を破棄して再試行
+      console.warn("localStorage 容量超過。古い記録を削除して再試行:", e.message);
+      all.splice(0, Math.floor(all.length / 2));
+      try {
+        localStorage.setItem(this.STORAGE_KEY, JSON.stringify(all));
+      } catch(e2) {
+        console.error("PredictionHistory: 再試行も失敗:", e2.message);
+      }
+    }
+
+    return snapshot;
+  },
+
+  // ── デバッグ用：全履歴をコンソールに表示 ─────────────────
+  printAll() {
+    const all = this.getAll();
+    console.group(`📋 予測履歴 (${all.length}件)`);
+    [...all].sort((a,b)=>b.targetRound-a.targetRound).forEach(h => {
+      console.log(
+        `[第${h.targetRound}回向け]`,
+        `予測日時: ${h.predictedAt.slice(0,19)}`,
+        `基準回: 第${h.basedOnRound}回`,
+        `パターン数: ${h.predictions.length}`
+      );
+    });
+    console.groupEnd();
+  },
+
+  // ── デバッグ用：全履歴を削除 ─────────────────────────────
+  clearAll() {
+    localStorage.removeItem(this.STORAGE_KEY);
+    console.log("PredictionHistory: 全履歴を削除しました");
+  },
+};
+
 // ── 状態 ──────────────────────────────────────────────────
 const STATE = {
-  data:    [],
-  sha:     null,
-  charts:  {},
+  data:   [],
+  sha:    null,
+  charts: {},
 };
 
 // ────────────────────────────────────────────────────────────
@@ -614,6 +720,48 @@ class LotoLearner {
     );
     console.groupEnd();
   }
+
+  // ──────────────────────────────────────────────────────────
+// 次回合計値のトレンドメッセージを返す（Pattern A 専用）
+// ──────────────────────────────────────────────────────────
+getTrendMessage(data) {
+  if(!this.model) return null;
+
+  const slope      = this.model.targetSum.slope;
+  const targetSum  = this.model.targetSum.value;
+  const lastTotal  = data[data.length-1]?.total || 0;
+  const last5avg   = data.slice(-5).reduce((s,d)=>s+d.total,0) / 5;
+  const globalAvg  = this.model.targetSum.globalMean;
+  const diff       = targetSum - last5avg;
+
+  // 方向判定
+  const dir =
+    slope >  3 ? { icon:"📈", text:"急上昇傾向",  color:"#ff6b6b" } :
+    slope >  1 ? { icon:"↗",  text:"上昇傾向",    color:"#fdcb6e" } :
+    slope < -3 ? { icon:"📉", text:"急下降傾向",  color:"#74b9ff" } :
+    slope < -1 ? { icon:"↘",  text:"下降傾向",    color:"#74b9ff" } :
+                 { icon:"➡",  text:"横ばい傾向",  color:"#a0a8b8" };
+
+  // 目標合計値との乖離メッセージ
+  const diffMsg =
+    diff >  20 ? `（平均より+${diff.toFixed(0)}高い水準が続いている）` :
+    diff < -20 ? `（平均より${Math.abs(diff).toFixed(0)}低い水準が続いている）` :
+                 `（平均付近で推移中）`;
+
+  return {
+    icon:      dir.icon,
+    text:      dir.text,
+    color:     dir.color,
+    slope:     slope,
+    targetSum: targetSum.toFixed(0),
+    lastTotal,
+    diffMsg,
+    fullText:
+      `${dir.icon} 次回合計値は【${dir.text}】 ` +
+      `目標値: ${targetSum.toFixed(0)} / 直近5回平均: ${last5avg.toFixed(0)} ` +
+      `${diffMsg}`,
+  };
+}
 
   // ── 外部から呼び出し可能なユーティリティ ──────────────────
   getLogs()   { try{ return JSON.parse(localStorage.getItem(this.LOG_KEY)||"[]"); }catch(e){ return []; } }
@@ -1919,34 +2067,254 @@ function renderListTable(filter="") {
 }
 
 function openDetail(round) {
-  const d     = STATE.data.find(x=>x.round===round);
-  if (!d) return;
+  const d = STATE.data.find(x => x.round === round);
+  if(!d) return;
 
   const fd    = analyzeFrequency(STATE.data);
-  const fMap  = Object.fromEntries(fd.map(f=>[f.num, f]));
-  const maxCnt= Math.max(...fd.map(f=>f.count));
+  const fMap  = Object.fromEntries(fd.map(f => [f.num, f]));
+  const maxCnt= Math.max(...fd.map(f => f.count));
 
-  // ゾーン分布
-  const zoneDist = Object.entries(CFG.ZONES).map(([zName, zRange])=>{
-    const cnt = d.numbers.filter(n=>zRange.includes(n)).length;
-    return {zName, cnt};
-  });
+  const zoneDist = Object.entries(CFG.ZONES).map(([zName, zRange]) => ({
+    zName,
+    cnt: d.numbers.filter(n => zRange.includes(n)).length,
+  }));
 
   const {pairs, maxLen} = countConsec(d.numbers);
-  const even = d.numbers.filter(n=>n%2===0).length;
+  const even = d.numbers.filter(n => n % 2 === 0).length;
 
-  document.getElementById("detail-title").textContent = `第 ${d.round} 回  ${d.date}`;
+  // ── スナップショット照合（⚠ 予測関数は再実行しない） ──────
+  const snapshot = PredictionHistory.getByRound(round);
+
+  const PATTERN_COLOR = {
+    A:'#6c63ff', B:'#00d4aa', C:'#ffd93d', D:'#a855f7', E:'#f59e0b',
+  };
+
+  // ── 予測比較 HTML 生成 ─────────────────────────────────────
+  let predHTML = '';
+
+  if(snapshot) {
+    const predDate = new Date(snapshot.predictedAt);
+    const dateStr  = `${predDate.getFullYear()}/${predDate.getMonth()+1}/${predDate.getDate()} ${String(predDate.getHours()).padStart(2,'0')}:${String(predDate.getMinutes()).padStart(2,'0')}`;
+
+    // Pattern A のトレンドメッセージ
+    let trendHTML = '';
+    if(LEARNER && LEARNER.model) {
+      const trend = LEARNER.getTrendMessage(STATE.data);
+      if(trend) {
+        trendHTML = `
+          <div class="trend-message-box" style="border-left:3px solid ${trend.color}">
+            <div class="trend-message-title">🧠 Pattern A 学習モデル：次回の合計値予測</div>
+            <div class="trend-message-body" style="color:${trend.color}">
+              ${trend.icon} 次回合計値は<strong>【${trend.text}】</strong>
+            </div>
+            <div class="trend-message-detail">
+              目標値: <strong>${trend.targetSum}</strong>
+              &nbsp;/&nbsp;
+              直近5回平均: <strong>${(STATE.data.slice(-5).reduce((s,dd)=>s+dd.total,0)/5)|0}</strong>
+              &nbsp;/&nbsp;
+              前回合計値: <strong>${trend.lastTotal}</strong>
+            </div>
+            <div class="trend-message-sub">${trend.diffMsg}</div>
+          </div>
+        `;
+      }
+    }
+
+    // サマリーバー（全パターン的中数の概要）
+    const allHits = snapshot.predictions.map(pred =>
+      pred.numbers.filter(n => d.numbers.includes(n)).length
+    );
+    const maxHit     = Math.max(...allHits);
+    const bestPattern= snapshot.predictions[allHits.indexOf(maxHit)];
+
+    const summaryHTML = `
+      <div class="snapshot-summary">
+        <div class="snapshot-summary-left">
+          <div class="snapshot-info-row">
+            <span class="snapshot-badge">📸 スナップショット</span>
+            <span class="snapshot-date">予測日時: ${dateStr}</span>
+          </div>
+          <div class="snapshot-info-row" style="margin-top:4px">
+            <span style="font-size:0.78rem;color:var(--text2)">
+              第${snapshot.basedOnRound}回データ時点の予測
+              &nbsp;→&nbsp;
+              第${snapshot.targetRound}回向け
+            </span>
+          </div>
+        </div>
+        <div class="snapshot-best">
+          <div class="snapshot-best-label">最高的中</div>
+          <div class="snapshot-best-val" style="color:${PATTERN_COLOR[bestPattern.pattern]}">
+            Pattern ${bestPattern.pattern}: ${maxHit}個
+          </div>
+        </div>
+      </div>
+    `;
+
+    // 比較カード（保存された静的データを使用）
+    const compareCards = snapshot.predictions.map((pred, idx) => {
+      const color     = PATTERN_COLOR[pred.pattern] || '#6c63ff';
+      const hitNums   = pred.numbers.filter(n => d.numbers.includes(n));
+      const hitCount  = hitNums.length;
+      const totalDiff = pred.total - d.total;
+
+      const hitClass  =
+        hitCount >= 4 ? 'hit-excellent' :
+        hitCount >= 3 ? 'hit-good'      :
+        hitCount >= 1 ? 'hit-ok'        : 'hit-miss';
+      const hitLabel  =
+        hitCount >= 4 ? `🏆 ${hitCount}個` :
+        hitCount >= 3 ? `🎯 ${hitCount}個` :
+        hitCount >= 1 ? `△ ${hitCount}個`  : '✗ 0個';
+      const diffColor =
+        Math.abs(totalDiff) <= 10 ? 'var(--green)'  :
+        Math.abs(totalDiff) <= 25 ? 'var(--yellow)' : 'var(--hot)';
+
+      return `
+        <div class="pred-compare-card" style="border-left:3px solid ${color}">
+
+          <div class="pred-compare-header">
+            <span class="pred-pattern-badge"
+              style="background:${color}20;color:${color};border:1px solid ${color}">
+              Pattern ${pred.pattern}
+            </span>
+            <span class="pred-label-text">${pred.label}</span>
+            <span class="pred-hit-badge ${hitClass}">${hitLabel}</span>
+          </div>
+
+          <div style="font-size:0.7rem;color:var(--text2);margin:2px 0 10px;
+            white-space:nowrap;overflow:hidden;text-overflow:ellipsis"
+            title="${pred.method}">
+            ${pred.method}
+          </div>
+
+          <!-- 予測番号 -->
+          <div style="margin-bottom:8px">
+            <div class="balls-row-label">予測番号</div>
+            <div class="number-balls" style="gap:5px">
+              ${pred.numbers.map(n => {
+                const isHit = d.numbers.includes(n);
+                return `
+                  <div class="ball ${getBallClass(n)}"
+                    style="width:34px;height:34px;font-size:0.78rem;
+                      ${isHit
+                        ? 'box-shadow:0 0 10px 3px rgba(255,215,0,0.8);outline:2px solid gold;'
+                        : 'opacity:0.35;filter:grayscale(0.6);'
+                      }">
+                    ${n}
+                  </div>`;
+              }).join('')}
+            </div>
+          </div>
+
+          <!-- 実際の当選番号 -->
+          <div style="margin-bottom:12px">
+            <div class="balls-row-label">実際の当選番号</div>
+            <div class="number-balls" style="gap:5px">
+              ${d.numbers.map(n => {
+                const isHit = pred.numbers.includes(n);
+                return `
+                  <div class="ball ${getBallClass(n)}"
+                    style="width:34px;height:34px;font-size:0.78rem;
+                      ${isHit
+                        ? 'box-shadow:0 0 10px 3px rgba(255,215,0,0.8);outline:2px solid gold;'
+                        : 'opacity:0.35;filter:grayscale(0.6);'
+                      }">
+                    ${n}
+                  </div>`;
+              }).join('')}
+            </div>
+          </div>
+
+          <!-- 数値比較 -->
+          <div class="pred-compare-meta">
+            <div class="pred-meta-item">
+              <div class="label">予測合計</div>
+              <div class="value">${pred.total}</div>
+            </div>
+            <div class="pred-meta-item">
+              <div class="label">実際合計</div>
+              <div class="value">${d.total}</div>
+            </div>
+            <div class="pred-meta-item">
+              <div class="label">合計差</div>
+              <div class="value" style="color:${diffColor}">
+                ${totalDiff >= 0 ? '+' : ''}${totalDiff}
+              </div>
+            </div>
+            <div class="pred-meta-item">
+              <div class="label">的中数字</div>
+              <div class="value"
+                style="color:${color};font-size:${hitNums.length>0?'0.82rem':'0.85rem'}">
+                ${hitNums.length > 0 ? hitNums.join(' / ') : 'なし'}
+              </div>
+            </div>
+          </div>
+
+          <!-- 的中率バー -->
+          <div style="margin-top:10px">
+            <div style="display:flex;justify-content:space-between;
+              font-size:0.68rem;color:var(--text2);margin-bottom:3px">
+              <span>的中率</span>
+              <span>${hitCount} / 6</span>
+            </div>
+            <div style="height:5px;background:var(--border);border-radius:3px;overflow:hidden">
+              <div style="height:100%;width:${(hitCount/6)*100}%;
+                background:${color};border-radius:3px;
+                transition:width 0.8s ease"></div>
+            </div>
+          </div>
+
+        </div>
+      `;
+    }).join('');
+
+    predHTML = `
+      <div class="detail-section">
+        <h3>🔮 予測との答え合わせ</h3>
+        ${summaryHTML}
+        ${trendHTML}
+        <div class="pred-compare-grid">
+          ${compareCards}
+        </div>
+      </div>
+    `;
+
+  } else {
+    // スナップショットなし
+    predHTML = `
+      <div class="detail-section">
+        <h3>🔮 予測との答え合わせ</h3>
+        <div class="no-snapshot-box">
+          <div class="no-snapshot-icon">📭</div>
+          <div class="no-snapshot-text">
+            第${round}回向けの事前予測記録がありません
+          </div>
+          <div class="no-snapshot-sub">
+            「🔮 予測する」ボタンを押すと、次回向けの予測がスナップショットとして保存され、
+            結果発表後にここで答え合わせができます
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  // ── HTML 組み立て ──────────────────────────────────────────
+  document.getElementById("detail-title").textContent =
+    `第 ${d.round} 回  ${d.date}`;
+
   document.getElementById("detail-content").innerHTML = `
 
-    <!-- 番号表示 -->
     <div class="detail-section">
       <h3>当選番号</h3>
       <div class="number-balls" style="justify-content:center;gap:10px">
-        ${d.numbers.map(n=>`<div class="ball ${getBallClass(n)}" style="width:48px;height:48px;font-size:1rem">${n}</div>`).join("")}
+        ${d.numbers.map(n=>`
+          <div class="ball ${getBallClass(n)}"
+            style="width:48px;height:48px;font-size:1rem">${n}
+          </div>`).join('')}
       </div>
     </div>
 
-    <!-- 基本統計 -->
     <div class="detail-section">
       <h3>この回の統計</h3>
       <div class="detail-meta-grid">
@@ -1969,7 +2337,6 @@ function openDetail(round) {
       </div>
     </div>
 
-    <!-- ゾーン分布 -->
     <div class="detail-section">
       <h3>ゾーン分布</h3>
       <div class="zone-dist-row">
@@ -1979,33 +2346,34 @@ function openDetail(round) {
             <div class="zone-dist-item">
               <div class="z-name" style="color:${colors[i]}">${z.zName.replace("Zone","Z")}</div>
               <div class="z-val" style="color:${colors[i]}">${z.cnt}</div>
-            </div>
-          `;
-        }).join("")}
+            </div>`;
+        }).join('')}
       </div>
     </div>
 
-    <!-- 各数字の出現頻度 -->
     <div class="detail-section">
       <h3>各数字の全期間出現頻度</h3>
       ${d.numbers.map(n=>{
-        const f    = fMap[n];
-        const pct  = maxCnt > 0 ? (f.count/maxCnt)*100 : 0;
-        const clr  = f.label==="HOT"?"#ff6b6b":f.label==="COLD"?"#74b9ff":"#6c63ff";
+        const f   = fMap[n];
+        const pct = maxCnt>0 ? (f.count/maxCnt)*100 : 0;
+        const clr = f.label==="HOT"?"#ff6b6b":f.label==="COLD"?"#74b9ff":"#6c63ff";
         return `
           <div class="detail-freq-row">
-            <div class="ball ${getBallClass(n)}" style="width:34px;height:34px;font-size:0.8rem;flex-shrink:0">${n}</div>
+            <div class="ball ${getBallClass(n)}"
+              style="width:34px;height:34px;font-size:0.8rem;flex-shrink:0">${n}</div>
             <div class="detail-freq-bar-wrap">
-              <div class="detail-freq-bar" style="width:${pct}%;background:${clr}"></div>
+              <div class="detail-freq-bar"
+                style="width:${pct}%;background:${clr}"></div>
             </div>
             <div style="min-width:80px;text-align:right;font-size:0.85rem">
               ${f.count}回
               <span style="font-size:0.7rem;color:${clr};margin-left:4px">${f.label}</span>
             </div>
-          </div>
-        `;
-      }).join("")}
+          </div>`;
+      }).join('')}
     </div>
+
+    ${predHTML}
   `;
 
   closeModal("modal-list");
@@ -2128,9 +2496,10 @@ document.getElementById("btn-add-save").addEventListener("click", async () => {
 
 // 予測
 document.getElementById("btn-predict").addEventListener("click", () => {
-  if (STATE.data.length < 10) { showToast("データが10件以上必要です","error"); return; }
+  if(STATE.data.length < 10){ showToast("データが10件以上必要です","error"); return; }
   const btn = document.getElementById("btn-predict");
   setLoading(btn, true);
+
   setTimeout(() => {
     try {
       const pA = predictRuleBased(STATE.data);
@@ -2139,12 +2508,24 @@ document.getElementById("btn-predict").addEventListener("click", () => {
       const pD = predictOccult(STATE.data);
       const pE = predictEnsemble(STATE.data);
 
-      runGarapon([pA, pB, pC, pD, pE], () => {
-        renderPredictions([pA, pB, pC, pD, pE]);
+      const allPreds = [pA, pB, pC, pD, pE];
+
+      // ── スナップショット保存（予測実行時点で固定） ────────
+      const latestRound = STATE.data[STATE.data.length-1]?.round || 0;
+      const snapshot    = PredictionHistory.save(allPreds, latestRound);
+      showToast(
+        `第${snapshot.targetRound}回向け予測をスナップショット保存しました`,
+        "success",
+        4000
+      );
+
+      runGarapon(allPreds, () => {
+        renderPredictions(allPreds);
         document.getElementById("predict-section").style.display = "block";
         document.getElementById("predict-section").scrollIntoView({behavior:"smooth"});
         showToast("予測完了！ 5パターン出力", "success");
       });
+
     } catch(e) {
       showToast("予測エラー: " + e.message, "error");
       console.error(e);
@@ -2153,6 +2534,7 @@ document.getElementById("btn-predict").addEventListener("click", () => {
     }
   }, 50);
 });
+
 
 // モーダル外クリックで閉じる
 document.querySelectorAll(".modal-overlay").forEach(ol => {
