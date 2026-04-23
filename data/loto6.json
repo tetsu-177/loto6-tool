@@ -1,7 +1,20 @@
 {
-  "lastUpdated": "2025/4/20",
-  "totalRounds": 341,
+  "lastUpdated": "2026/4/23",
+  "totalRounds": 342,
   "data": [
+    {
+      "round": 2096,
+      "date": "2026/4/23",
+      "numbers": [
+        8,
+        15,
+        18,
+        21,
+        33,
+        43
+      ],
+      "total": 138
+    },
     {
       "round": 2095,
       "date": "2025/4/20",
