@@ -347,6 +347,7 @@ function predictRuleBased(data) {
     label:   "ルールベース予測",
     method:  `RuleBase ${collected}回試行 → 最頻出6数字`,
   };
+}
 
 // ============================================================
 // 修正③ predictStatistical - Pattern B
