@@ -239,15 +239,15 @@ function scoreCombo(nums, freqMap, sumMean, sumStd) {
   // ── ゾーンスコア ─────────────────────────────
   const zs = cov / 5;
 
-  // ── 連番スコア（フラット型）──────────────────
-  // 実績: 0組〜2組は分散しており全て有効
-  // → 0組:0.88, 1組:1.0, 2組:0.92 でほぼフラット
-  // → 3組以上のみ徐々に減点
+  // ── 連番スコア（実績に基づく自然分散型）──────────────────
+  // 実績: 0組(約45%)、1組(約45%)は同等に評価、2組(約10%未満)は微減点
+  // → 0組:1.00, 1組:1.00, 2組:0.90
   const cs =
-    pairs === 0 ? 0.88 :
+    pairs === 0 ? 1.00 :
     pairs === 1 ? 1.00 :
-    pairs === 2 ? 0.92 :
-    Math.max(0, 1 - (pairs - 2) * 0.30);
+    pairs === 2 ? 0.90 :
+    Math.max(0, 1 - (pairs - 2) * 0.40);
+
 
   const score =
     CFG.SCORE_W.freq   * fs +
@@ -471,15 +471,16 @@ function predictTransition(data) {
     .sort((a,b) => b[1]-a[1])
     .map(([n,s]) => ({num:parseInt(n), tScore:s}));
 
-  // ── 連番ソフトスコア（固定なし・フラット型） ──
-  // 0組:0.88, 1組:1.0, 2組:0.92 → 自然分散
-  // 3組以上のみ減点
+  // ── 連番ソフトスコア（実績に基づく自然分散型） ──
+  // 0組:1.00, 1組:1.00, 2組:0.90 → 実績の確率(約52%)に自然収束させる
+  // 3組以上のみ大きく減点
   function pairsSoftScore(pairs) {
-    if(pairs === 0) return 0.88;
+    if(pairs === 0) return 1.00;
     if(pairs === 1) return 1.00;
-    if(pairs === 2) return 0.92;
-    return Math.max(0, 1 - (pairs - 2) * 0.30);
+    if(pairs === 2) return 0.90;
+    return Math.max(0, 1 - (pairs - 2) * 0.40);
   }
+
 
   // ── 2条件のみのハードフィルター ─────────────
   // ①合計値が予測バケット内
