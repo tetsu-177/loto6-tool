@@ -185,6 +185,30 @@ main {
 .prediction-card.pattern-a::before { background: var(--accent); }
 .prediction-card.pattern-b::before { background: var(--green); }
 .prediction-card.pattern-c::before { background: var(--yellow); }
+/* ── 既存の .pattern-c::before の直後に追記 ── */
+
+.prediction-card.pattern-d::before {
+  background: linear-gradient(90deg, #a855f7, #ec4899);
+}
+
+.prediction-card.pattern-e::before {
+  background: linear-gradient(90deg, #f59e0b, #ef4444, #8b5cf6);
+  background-size: 200% 100%;
+  animation: patternEShimmer 2s linear infinite;
+}
+
+@keyframes patternEShimmer {
+  0%   { background-position: 0% 0%; }
+  100% { background-position: 200% 0%; }
+}
+
+.pattern-d .score-fill { background: linear-gradient(90deg, #a855f7, #ec4899); }
+.pattern-e .score-fill {
+  background: linear-gradient(90deg, #f59e0b, #ef4444, #8b5cf6);
+  background-size: 200% 100%;
+  animation: patternEShimmer 2s linear infinite;
+}
+
 .prediction-card .pattern-label {
   font-size: 0.75rem;
   color: var(--text2);
