@@ -1,4 +1,5 @@
 
+
 /* ============================================================
    app.js - ロト6 予測ツール
    ============================================================ */
@@ -275,54 +276,87 @@ function weightedSample6(weights) {
   return res;
 }
 
-
 // ────────────────────────────────────────────────────────────
 // 予測ロジック
 // ────────────────────────────────────────────────────────────
-
 // ============================================================
 // 修正② predictRuleBased - Pattern A
-// scoreCombo の変更のみ反映（ロジック本体は変更なし）
+// ルールベースで500回試行 → 最頻出6数字を選出
 // ============================================================
 function predictRuleBased(data) {
-  const fm   = buildFreqMap(data);
-  const sd   = analyzeSum(data);
-  const wts  = CFG.NUMBERS.map(n => Math.max(fm[n], 1));
-  const cands = [];
+  const fm  = buildFreqMap(data);
+  const sd  = analyzeSum(data);
+  const wts = CFG.NUMBERS.map(n => Math.max(fm[n], 1));
 
-  for(let i=0; i<80000 && cands.length<200; i++){
+  const SIMULATION = 500;
+  const counter    = {};
+  CFG.NUMBERS.forEach(n => (counter[n] = 0));
+
+  // ── フェーズ1: ルール適合の組み合わせを500個収集 ──
+  let collected = 0;
+  let attempts  = 0;
+
+  while(collected < SIMULATION && attempts < 600000) {
+    attempts++;
     const c = weightedSample6(wts);
     if(new Set(c).size < 6) continue;
-    if(passesRules(c)) cands.push(scoreCombo(c, fm, sd.mean, sd.std));
+    if(!passesRules(c)) continue;
+    c.forEach(n => counter[n]++);
+    collected++;
   }
 
-  if(!cands.length){
-    for(let i=0; i<5000; i++){
+  // ── フェーズ2: 500個集まらなかった場合フォールバック ──
+  // （ルール条件を外してスコア上位のみで収集）
+  if(collected < 100) {
+    console.warn(`Pattern A: ルール適合 ${collected}件のみ。フォールバック実行`);
+    attempts = 0;
+    while(collected < SIMULATION && attempts < 200000) {
+      attempts++;
       const c = weightedSample6(wts);
       if(new Set(c).size < 6) continue;
-      cands.push(scoreCombo(c, fm, sd.mean, sd.std));
+      // スコアが平均以上のもののみカウント
+      const r = scoreCombo(c, fm, sd.mean, sd.std);
+      if(r.score < 0.5) continue;
+      c.forEach(n => counter[n]++);
+      collected++;
     }
   }
 
-  cands.sort((a,b) => b.score - a.score);
+  // ── 出現頻度上位6数字を選出 ─────────────────────
+  const top6 = Object.entries(counter)
+    .sort((a,b) => b[1]-a[1])
+    .slice(0, 6)
+    .map(([n]) => parseInt(n))
+    .sort((a,b) => a-b);
+
+  // ── 上位6のスコアを評価 ──────────────────────────
+  const result = scoreCombo(top6, fm, sd.mean, sd.std);
+
+  // ── 出現回数TOP10をログ（デバッグ用） ───────────
+  const top10txt = Object.entries(counter)
+    .sort((a,b) => b[1]-a[1])
+    .slice(0, 10)
+    .map(([n,c]) => `${n}番:${c}回`)
+    .join(" / ");
+  console.log(`Pattern A TOP10出現: ${top10txt}`);
+
   return {
-    ...cands[0],
+    ...result,
     pattern: "A",
     label:   "ルールベース予測",
-    method:  "RuleBase + PlateauScoring",
+    method:  `RuleBase ${collected}回試行 → 最頻出6数字`,
   };
-}
-
 
 // ============================================================
 // 修正③ predictStatistical - Pattern B
-// scoreCombo の変更のみ反映（ロジック本体は変更なし）
+// 統計スコアリングで500回試行 → 最頻出6数字を選出
 // ============================================================
 function predictStatistical(data) {
   const fm  = buildFreqMap(data);
   const sd  = analyzeSum(data);
   const n   = data.length;
 
+  // ── 各数字の統計スコアを計算（1回だけ） ────────
   const ns = CFG.NUMBERS.map(num => {
     const avg  = (n * 6) / 43;
     const fdev = Math.abs(fm[num] - avg) / (avg + 1e-9);
@@ -342,33 +376,74 @@ function predictStatistical(data) {
   });
   ns.sort((a,b) => b.score - a.score);
 
-  const top20 = ns.slice(0,20).map(x => x.num);
+  const top20 = ns.slice(0, 20).map(x => x.num);
   const wts   = CFG.NUMBERS.map(n => Math.max(fm[n], 1));
-  let   best  = null;
 
-  for(let i=0; i<50000; i++){
+  const SIMULATION = 500;
+  const counter    = {};
+  CFG.NUMBERS.forEach(n => (counter[n] = 0));
+
+  // ── フェーズ1: ルール適合の組み合わせを500個収集 ──
+  let collected = 0;
+  let attempts  = 0;
+
+  while(collected < SIMULATION && attempts < 600000) {
+    attempts++;
+
+    // 70%はtop20から、30%は重み付きランダム
     const useTop = Math.random() < 0.7;
     const combo  = useTop
-      ? [...top20].sort(()=>Math.random()-0.5).slice(0,6)
+      ? [...top20].sort(() => Math.random()-0.5).slice(0, 6)
       : weightedSample6(wts);
+
     if(new Set(combo).size < 6) continue;
     if(!passesRules(combo)) continue;
-    const r = scoreCombo(combo, fm, sd.mean, sd.std);
-    if(!best || r.score > best.score) best = r;
+
+    combo.forEach(n => counter[n]++);
+    collected++;
   }
 
-  if(!best){
-    const combo = ns.slice(0,6).map(x=>x.num);
-    best = scoreCombo(combo, fm, sd.mean, sd.std);
+  // ── フェーズ2: 500個集まらなかった場合フォールバック ──
+  if(collected < 100) {
+    console.warn(`Pattern B: ルール適合 ${collected}件のみ。フォールバック実行`);
+    attempts = 0;
+    while(collected < SIMULATION && attempts < 200000) {
+      attempts++;
+
+      // top20優先で生成、ルール条件なし
+      const useTop = Math.random() < 0.8;
+      const combo  = useTop
+        ? [...top20].sort(() => Math.random()-0.5).slice(0, 6)
+        : weightedSample6(wts);
+
+      if(new Set(combo).size < 6) continue;
+
+      // スコアフィルター（最低ライン）
+      const r = scoreCombo(combo, fm, sd.mean, sd.std);
+      if(r.score < 0.45) continue;
+
+      combo.forEach(n => counter[n]++);
+      collected++;
+    }
   }
 
-  return {
-    ...best,
-    pattern: "B",
-    label:   "統計スコアリング予測",
-    method:  "StatisticalScoring + PlateauScoring",
-  };
-}
+  // ── 出現頻度上位6数字を選出 ─────────────────────
+  const top6 = Object.entries(counter)
+    .sort((a,b) => b[1]-a[1])
+    .slice(0, 6)
+    .map(([n]) => parseInt(n))
+    .sort((a,b) => a-b);
+
+  // ── 上位6のスコアを評価 ──────────────────────────
+  const result = scoreCombo(top6, fm, sd.mean, sd.std);
+
+  // ── 出現回数TOP10をログ（デバッグ用） ───────────
+  const top10txt = Object.entries(counter)
+    .sort((a,b) => b[1]-a[1])
+    .slice(0, 10)
+    .map(([n,c]) => `${n}番:${c}回`)
+    .join(" / ");
+  console.log(`Pattern B TOP10出現: ${top10txt}`);
 
 
 // ============================================================
