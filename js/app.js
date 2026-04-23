@@ -22,117 +22,12 @@ const CFG = {
   SCORE_W: { freq:0.30, sum:0.30, zone:0.20, consec:0.20 },
 };
 
-// ============================================================
-// PredictionHistory - 予測スナップショット管理
-// localStorage にJSONとして永続保存する
-// ============================================================
-const PredictionHistory = {
-
-  STORAGE_KEY: "loto6_prediction_history",
-  MAX_RECORDS: 100,
-
-  // ── 全履歴を取得 ─────────────────────────────────────────
-  getAll() {
-    try {
-      return JSON.parse(localStorage.getItem(this.STORAGE_KEY) || "[]");
-    } catch(e) {
-      console.warn("PredictionHistory.getAll エラー:", e.message);
-      return [];
-    }
-  },
-
-  // ── 特定の targetRound の予測を取得 ──────────────────────
-  getByRound(round) {
-    return this.getAll().find(h => h.targetRound === round) || null;
-  },
-
-  // ── スナップショット保存（同一 targetRound は上書き） ─────
-  save(predictions, latestRound) {
-    const targetRound = latestRound + 1;
-    const all         = this.getAll();
-
-    // 同一 targetRound を上書き
-    const existIdx = all.findIndex(h => h.targetRound === targetRound);
-
-    const snapshot = {
-      targetRound,
-      predictedAt: new Date().toISOString(),
-      basedOnRound: latestRound,
-      predictions: predictions.map(p => ({
-        pattern: p.pattern,
-        label:   p.label,
-        method:  p.method,
-        numbers: [...p.numbers],
-        total:   p.total,
-        evenCnt: p.evenCnt,
-        oddCnt:  p.oddCnt,
-        pairs:   p.pairs,
-        score:   p.score,
-        coveredZones: p.coveredZones,
-      })),
-    };
-
-    if(existIdx >= 0) {
-      all[existIdx] = snapshot;
-      console.log(`PredictionHistory: 第${targetRound}回の予測を上書き保存`);
-    } else {
-      all.push(snapshot);
-      console.log(`PredictionHistory: 第${targetRound}回の予測を新規保存`);
-    }
-
-    // 古いものから破棄（MAX_RECORDS 件を超えたら）
-    if(all.length > this.MAX_RECORDS) {
-      all.sort((a,b) => a.targetRound - b.targetRound);
-      all.splice(0, all.length - this.MAX_RECORDS);
-    }
-
-    try {
-      localStorage.setItem(this.STORAGE_KEY, JSON.stringify(all));
-      console.log(
-        `PredictionHistory: 保存完了 (${all.length}件 / 最大${this.MAX_RECORDS}件) `,
-        `対象: 第${targetRound}回`
-      );
-    } catch(e) {
-      // localStorage 容量超過時は古い半分を破棄して再試行
-      console.warn("localStorage 容量超過。古い記録を削除して再試行:", e.message);
-      all.splice(0, Math.floor(all.length / 2));
-      try {
-        localStorage.setItem(this.STORAGE_KEY, JSON.stringify(all));
-      } catch(e2) {
-        console.error("PredictionHistory: 再試行も失敗:", e2.message);
-      }
-    }
-
-    return snapshot;
-  },
-
-  // ── デバッグ用：全履歴をコンソールに表示 ─────────────────
-  printAll() {
-    const all = this.getAll();
-    console.group(`📋 予測履歴 (${all.length}件)`);
-    [...all].sort((a,b)=>b.targetRound-a.targetRound).forEach(h => {
-      console.log(
-        `[第${h.targetRound}回向け]`,
-        `予測日時: ${h.predictedAt.slice(0,19)}`,
-        `基準回: 第${h.basedOnRound}回`,
-        `パターン数: ${h.predictions.length}`
-      );
-    });
-    console.groupEnd();
-  },
-
-  // ── デバッグ用：全履歴を削除 ─────────────────────────────
-  clearAll() {
-    localStorage.removeItem(this.STORAGE_KEY);
-    console.log("PredictionHistory: 全履歴を削除しました");
-  },
-};
-
 // ── 状態 ──────────────────────────────────────────────────
 const STATE = {
-  data:   [],
-  sha:    null,
-  charts: {},
+  data:            [],
+  sha:             null,
+  charts:          {},
+  lastPredictions: [],   // 最後に出力した予測結果を保存
 };
 
 // ────────────────────────────────────────────────────────────
@@ -180,93 +75,93 @@ function getBallBg(n) {
 // ────────────────────────────────────────────────────────────
 // GitHub API
 // ────────────────────────────────────────────────────────────
-async function apiGet() {
-  const r = await fetch("/.netlify/functions/getData");
-  if (!r.ok) throw new Error(`取得失敗: ${r.status}`);
-  return await r.json();
-}
+// async function apiGet() {
+//   const r = await fetch("/.netlify/functions/getData");
+//   if (!r.ok) throw new Error(`取得失敗: ${r.status}`);
+//   return await r.json();
+// }
 
-async function apiSave(data, sha) {
-  const r = await fetch("/.netlify/functions/saveData", {
-    method:  "POST",
-    headers: { "Content-Type": "application/json" },
-    body:    JSON.stringify({ data, sha }),
-  });
-  if (!r.ok) throw new Error(`保存失敗: ${r.status}`);
-  return await r.json();
-}
+// async function apiSave(data, sha) {
+//   const r = await fetch("/.netlify/functions/saveData", {
+//     method:  "POST",
+//     headers: { "Content-Type": "application/json" },
+//     body:    JSON.stringify({ data, sha }),
+//   });
+//   if (!r.ok) throw new Error(`保存失敗: ${r.status}`);
+//   return await r.json();
+// }
 
-async function loadData() {
-  try {
-    const res  = await apiGet();
-    STATE.sha  = res.sha;
-    STATE.data = (res.data.data || []).sort((a,b) => a.round - b.round);
-    updateUI();
-  } catch(e) {
-    console.error(e);
-    showToast("読み込みエラー: " + e.message, "error");
-    updateUI();
-  }
-}
+// async function loadData() {
+//   try {
+//     const res  = await apiGet();
+//     STATE.sha  = res.sha;
+//     STATE.data = (res.data.data || []).sort((a,b) => a.round - b.round);
+//     updateUI();
+//   } catch(e) {
+//     console.error(e);
+//     showToast("読み込みエラー: " + e.message, "error");
+//     updateUI();
+//   }
+// }
 
-async function saveData() {
-  const sorted  = [...STATE.data].sort((a,b) => b.round - a.round);
-  const payload = {
-    lastUpdated: sorted[0]?.date || "",
-    totalRounds: STATE.data.length,
-    data: sorted,
-  };
-  const res  = await apiSave(payload, STATE.sha);
-  STATE.sha  = res.sha;
-}
+// async function saveData() {
+//   const sorted  = [...STATE.data].sort((a,b) => b.round - a.round);
+//   const payload = {
+//     lastUpdated: sorted[0]?.date || "",
+//     totalRounds: STATE.data.length,
+//     data: sorted,
+//   };
+//   const res  = await apiSave(payload, STATE.sha);
+//   STATE.sha  = res.sha;
+// }
 
 //>>>>>>>>>>>>>>>ここからテスト用
 // ────────────────────────────────────────────────────────────
 // API・データ読み込み（ローカルJSON対応版）
 // ────────────────────────────────────────────────────────────
-// async function apiGet() {
-//   // ① 取得先を Netlify Functions から ローカルの JSON ファイルに変更
-//   const r = await fetch("data/loto6.json");
-//   if (!r.ok) throw new Error(`JSON取得失敗: ${r.status} (data/loto6.jsonが見つかりません)`);
-//   return await r.json();
-// }
+async function apiGet() {
+  // ① 取得先を Netlify Functions から ローカルの JSON ファイルに変更
+  const r = await fetch("data/loto6.json");
+  if (!r.ok) throw new Error(`JSON取得失敗: ${r.status} (data/loto6.jsonが見つかりません)`);
+  return await r.json();
+}
 
-// async function apiSave(data, sha) {
-//   // ローカル環境ではブラウザから直接ファイルを上書き保存できないため、
-//   // エラーを返すようにするか、何もしないようにします。
-//   throw new Error("ローカル環境のため保存機能は利用できません。");
-// }
+async function apiSave(data, sha) {
+  // ローカル環境ではブラウザから直接ファイルを上書き保存できないため、
+  // エラーを返すようにするか、何もしないようにします。
+  throw new Error("ローカル環境のため保存機能は利用できません。");
+}
 
-// async function loadData() {
-//   try {
-//     const res = await apiGet();
-//     STATE.sha = null; // ローカルファイル読み込みなのでshaは不要
+async function loadData() {
+  try {
+    const res = await apiGet();
+    STATE.sha = null; // ローカルファイル読み込みなのでshaは不要
 
-//     // ② JSONの構造に合わせて柔軟に配列を取り出す処理
-//     // loto6.json の中身が [...] でも {"data": [...]} でも対応できるようにしています
-//     let rawData = [];
-//     if (Array.isArray(res)) {
-//       rawData = res;
-//     } else if (res.data && Array.isArray(res.data)) {
-//       rawData = res.data;
-//     } else if (res.data && res.data.data && Array.isArray(res.data.data)) {
-//       rawData = res.data.data;
-//     }
+    // ② JSONの構造に合わせて柔軟に配列を取り出す処理
+    // loto6.json の中身が [...] でも {"data": [...]} でも対応できるようにしています
+    let rawData = [];
+    if (Array.isArray(res)) {
+      rawData = res;
+    } else if (res.data && Array.isArray(res.data)) {
+      rawData = res.data;
+    } else if (res.data && res.data.data && Array.isArray(res.data.data)) {
+      rawData = res.data.data;
+    }
 
-//     STATE.data = rawData.sort((a,b) => a.round - b.round);
-//     updateUI();
-//   } catch(e) {
-//     console.error(e);
-//     showToast("読み込みエラー: " + e.message, "error");
-//     updateUI(); // エラー時は空データとしてUIを更新
-//   }
-// }
+    STATE.data = rawData.sort((a,b) => a.round - b.round);
+    updateUI();
+  } catch(e) {
+    console.error(e);
+    showToast("読み込みエラー: " + e.message, "error");
+    updateUI(); // エラー時は空データとしてUIを更新
+  }
+}
 
-// async function saveData() {
-//   // ③ ブラウザからローカルのJSONは書き換えられないため、アラートを出して終了します
-//   showToast("ブラウザからのデータ保存はローカル環境ではできません。", "error");
-//   console.warn("保存機能を使用するには、Netlifyなどのサーバー環境が必要です。");
-// }
+async function saveData() {
+  // ③ ブラウザからローカルのJSONは書き換えられないため、アラートを出して終了します
+  showToast("ブラウザからのデータ保存はローカル環境ではできません。", "error");
+  console.warn("保存機能を使用するには、Netlifyなどのサーバー環境が必要です。");
+}
 //>>>>>>>>>>>>>>>ここまでテスト用
 
 // ────────────────────────────────────────────────────────────
@@ -2082,19 +1977,14 @@ function openDetail(round) {
   const {pairs, maxLen} = countConsec(d.numbers);
   const even = d.numbers.filter(n => n % 2 === 0).length;
 
-  // ── スナップショット照合（⚠ 予測関数は再実行しない） ──────
-  const snapshot = PredictionHistory.getByRound(round);
-
+  // ── 予測比較セクション生成 ───────────────────────────
   const PATTERN_COLOR = {
-    A:'#6c63ff', B:'#00d4aa', C:'#ffd93d', D:'#a855f7', E:'#f59e0b',
+    A: '#6c63ff', B: '#00d4aa', C: '#ffd93d', D: '#a855f7', E: '#f59e0b',
   };
 
-  // ── 予測比較 HTML 生成 ─────────────────────────────────────
   let predHTML = '';
 
-  if(snapshot) {
-    const predDate = new Date(snapshot.predictedAt);
-    const dateStr  = `${predDate.getFullYear()}/${predDate.getMonth()+1}/${predDate.getDate()} ${String(predDate.getHours()).padStart(2,'0')}:${String(predDate.getMinutes()).padStart(2,'0')}`;
+  if(STATE.lastPredictions && STATE.lastPredictions.length > 0) {
 
     // Pattern A のトレンドメッセージ
     let trendHTML = '';
@@ -2103,14 +1993,14 @@ function openDetail(round) {
       if(trend) {
         trendHTML = `
           <div class="trend-message-box" style="border-left:3px solid ${trend.color}">
-            <div class="trend-message-title">🧠 Pattern A 学習モデル：次回の合計値予測</div>
+            <div class="trend-message-title">🧠 Pattern A 学習モデル：次回予測</div>
             <div class="trend-message-body" style="color:${trend.color}">
               ${trend.icon} 次回合計値は<strong>【${trend.text}】</strong>
             </div>
             <div class="trend-message-detail">
               目標値: <strong>${trend.targetSum}</strong>
               &nbsp;/&nbsp;
-              直近5回平均: <strong>${(STATE.data.slice(-5).reduce((s,dd)=>s+dd.total,0)/5)|0}</strong>
+              直近5回平均: <strong>${STATE.data.slice(-5).reduce((s,dd)=>s+dd.total,0)/5 |0}</strong>
               &nbsp;/&nbsp;
               前回合計値: <strong>${trend.lastTotal}</strong>
             </div>
@@ -2120,86 +2010,46 @@ function openDetail(round) {
       }
     }
 
-    // サマリーバー（全パターン的中数の概要）
-    const allHits = snapshot.predictions.map(pred =>
-      pred.numbers.filter(n => d.numbers.includes(n)).length
-    );
-    const maxHit     = Math.max(...allHits);
-    const bestPattern= snapshot.predictions[allHits.indexOf(maxHit)];
-
-    const summaryHTML = `
-      <div class="snapshot-summary">
-        <div class="snapshot-summary-left">
-          <div class="snapshot-info-row">
-            <span class="snapshot-badge">📸 スナップショット</span>
-            <span class="snapshot-date">予測日時: ${dateStr}</span>
-          </div>
-          <div class="snapshot-info-row" style="margin-top:4px">
-            <span style="font-size:0.78rem;color:var(--text2)">
-              第${snapshot.basedOnRound}回データ時点の予測
-              &nbsp;→&nbsp;
-              第${snapshot.targetRound}回向け
-            </span>
-          </div>
-        </div>
-        <div class="snapshot-best">
-          <div class="snapshot-best-label">最高的中</div>
-          <div class="snapshot-best-val" style="color:${PATTERN_COLOR[bestPattern.pattern]}">
-            Pattern ${bestPattern.pattern}: ${maxHit}個
-          </div>
-        </div>
-      </div>
-    `;
-
-    // 比較カード（保存された静的データを使用）
-    const compareCards = snapshot.predictions.map((pred, idx) => {
-      const color     = PATTERN_COLOR[pred.pattern] || '#6c63ff';
-      const hitNums   = pred.numbers.filter(n => d.numbers.includes(n));
-      const hitCount  = hitNums.length;
-      const totalDiff = pred.total - d.total;
-
-      const hitClass  =
-        hitCount >= 4 ? 'hit-excellent' :
-        hitCount >= 3 ? 'hit-good'      :
-        hitCount >= 1 ? 'hit-ok'        : 'hit-miss';
-      const hitLabel  =
-        hitCount >= 4 ? `🏆 ${hitCount}個` :
-        hitCount >= 3 ? `🎯 ${hitCount}個` :
-        hitCount >= 1 ? `△ ${hitCount}個`  : '✗ 0個';
-      const diffColor =
-        Math.abs(totalDiff) <= 10 ? 'var(--green)'  :
+    // 各パターンの比較カード
+    const compareCards = STATE.lastPredictions.map(pred => {
+      const color      = PATTERN_COLOR[pred.pattern] || '#6c63ff';
+      const hitNums    = pred.numbers.filter(n => d.numbers.includes(n));
+      const hitCount   = hitNums.length;
+      const totalDiff  = pred.total - d.total;
+      const hitClass   = hitCount >= 3 ? 'hit-good' : hitCount >= 1 ? 'hit-ok' : 'hit-miss';
+      const hitLabel   = hitCount >= 3 ? '🎯 GOOD' : hitCount >= 1 ? '△ HIT' : '✗ MISS';
+      const diffColor  =
+        Math.abs(totalDiff) <= 10 ? 'var(--green)' :
         Math.abs(totalDiff) <= 25 ? 'var(--yellow)' : 'var(--hot)';
 
       return `
         <div class="pred-compare-card" style="border-left:3px solid ${color}">
 
           <div class="pred-compare-header">
-            <span class="pred-pattern-badge"
-              style="background:${color}20;color:${color};border:1px solid ${color}">
+            <span class="pred-pattern-badge" style="background:${color}20;color:${color};border:1px solid ${color}">
               Pattern ${pred.pattern}
             </span>
             <span class="pred-label-text">${pred.label}</span>
-            <span class="pred-hit-badge ${hitClass}">${hitLabel}</span>
+            <span class="pred-hit-badge ${hitClass}">${hitLabel} ${hitCount}個</span>
           </div>
 
-          <div style="font-size:0.7rem;color:var(--text2);margin:2px 0 10px;
-            white-space:nowrap;overflow:hidden;text-overflow:ellipsis"
-            title="${pred.method}">
+          <div style="font-size:0.72rem;color:var(--text2);margin:4px 0 8px 0;
+            white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
             ${pred.method}
           </div>
 
-          <!-- 予測番号 -->
-          <div style="margin-bottom:8px">
-            <div class="balls-row-label">予測番号</div>
-            <div class="number-balls" style="gap:5px">
+          <!-- 予測番号（的中は光らせる） -->
+          <div style="margin-bottom:10px">
+            <div style="font-size:0.72rem;color:var(--text2);margin-bottom:4px">予測番号</div>
+            <div class="number-balls" style="gap:6px">
               ${pred.numbers.map(n => {
                 const isHit = d.numbers.includes(n);
                 return `
                   <div class="ball ${getBallClass(n)}"
-                    style="width:34px;height:34px;font-size:0.78rem;
+                    style="width:36px;height:36px;font-size:0.8rem;
                       ${isHit
-                        ? 'box-shadow:0 0 10px 3px rgba(255,215,0,0.8);outline:2px solid gold;'
-                        : 'opacity:0.35;filter:grayscale(0.6);'
+                        ? 'box-shadow:0 0 12px 4px rgba(255,215,0,0.7);outline:2px solid gold;'
+                        : 'opacity:0.38;filter:grayscale(0.5);'
                       }">
                     ${n}
                   </div>`;
@@ -2207,18 +2057,18 @@ function openDetail(round) {
             </div>
           </div>
 
-          <!-- 実際の当選番号 -->
+          <!-- 実際の番号（的中は光らせる） -->
           <div style="margin-bottom:12px">
-            <div class="balls-row-label">実際の当選番号</div>
-            <div class="number-balls" style="gap:5px">
+            <div style="font-size:0.72rem;color:var(--text2);margin-bottom:4px">実際の当選番号</div>
+            <div class="number-balls" style="gap:6px">
               ${d.numbers.map(n => {
                 const isHit = pred.numbers.includes(n);
                 return `
                   <div class="ball ${getBallClass(n)}"
-                    style="width:34px;height:34px;font-size:0.78rem;
+                    style="width:36px;height:36px;font-size:0.8rem;
                       ${isHit
-                        ? 'box-shadow:0 0 10px 3px rgba(255,215,0,0.8);outline:2px solid gold;'
-                        : 'opacity:0.35;filter:grayscale(0.6);'
+                        ? 'box-shadow:0 0 12px 4px rgba(255,215,0,0.7);outline:2px solid gold;'
+                        : 'opacity:0.38;filter:grayscale(0.5);'
                       }">
                     ${n}
                   </div>`;
@@ -2226,7 +2076,7 @@ function openDetail(round) {
             </div>
           </div>
 
-          <!-- 数値比較 -->
+          <!-- 数値比較メタ -->
           <div class="pred-compare-meta">
             <div class="pred-meta-item">
               <div class="label">予測合計</div>
@@ -2244,19 +2094,16 @@ function openDetail(round) {
             </div>
             <div class="pred-meta-item">
               <div class="label">的中数字</div>
-              <div class="value"
-                style="color:${color};font-size:${hitNums.length>0?'0.82rem':'0.85rem'}">
+              <div class="value" style="color:${color};font-size:0.85rem">
                 ${hitNums.length > 0 ? hitNums.join(' / ') : 'なし'}
               </div>
             </div>
           </div>
 
-          <!-- 的中率バー -->
+          <!-- スコアバー -->
           <div style="margin-top:10px">
-            <div style="display:flex;justify-content:space-between;
-              font-size:0.68rem;color:var(--text2);margin-bottom:3px">
-              <span>的中率</span>
-              <span>${hitCount} / 6</span>
+            <div style="font-size:0.7rem;color:var(--text2);margin-bottom:3px">
+              的中率 ${hitCount}/6
             </div>
             <div style="height:5px;background:var(--border);border-radius:3px;overflow:hidden">
               <div style="height:100%;width:${(hitCount/6)*100}%;
@@ -2271,35 +2118,31 @@ function openDetail(round) {
 
     predHTML = `
       <div class="detail-section">
-        <h3>🔮 予測との答え合わせ</h3>
-        ${summaryHTML}
+        <h3>🔮 予測との比較（最終出力値）</h3>
+        <div style="font-size:0.78rem;color:var(--text2);margin-bottom:12px;
+          padding:8px;background:var(--bg3);border-radius:6px">
+          💡「予測する」ボタンで最後に出力した予測値と、この回の実際の結果を比較しています。
+          金枠のボールが的中数字です。
+        </div>
         ${trendHTML}
         <div class="pred-compare-grid">
           ${compareCards}
         </div>
       </div>
     `;
-
   } else {
-    // スナップショットなし
     predHTML = `
       <div class="detail-section">
-        <h3>🔮 予測との答え合わせ</h3>
-        <div class="no-snapshot-box">
-          <div class="no-snapshot-icon">📭</div>
-          <div class="no-snapshot-text">
-            第${round}回向けの事前予測記録がありません
-          </div>
-          <div class="no-snapshot-sub">
-            「🔮 予測する」ボタンを押すと、次回向けの予測がスナップショットとして保存され、
-            結果発表後にここで答え合わせができます
-          </div>
+        <h3>🔮 予測との比較</h3>
+        <div style="text-align:center;padding:24px;color:var(--text2);
+          font-size:0.85rem;background:var(--bg3);border-radius:8px">
+          「🔮 予測する」ボタンを実行すると、ここに各パターンの予測と実際の結果の比較が表示されます
         </div>
       </div>
     `;
   }
 
-  // ── HTML 組み立て ──────────────────────────────────────────
+  // ── HTML組み立て ────────────────────────────────────────
   document.getElementById("detail-title").textContent =
     `第 ${d.round} 回  ${d.date}`;
 
@@ -2311,7 +2154,7 @@ function openDetail(round) {
         ${d.numbers.map(n=>`
           <div class="ball ${getBallClass(n)}"
             style="width:48px;height:48px;font-size:1rem">${n}
-          </div>`).join('')}
+          </div>`).join("")}
       </div>
     </div>
 
@@ -2347,7 +2190,7 @@ function openDetail(round) {
               <div class="z-name" style="color:${colors[i]}">${z.zName.replace("Zone","Z")}</div>
               <div class="z-val" style="color:${colors[i]}">${z.cnt}</div>
             </div>`;
-        }).join('')}
+        }).join("")}
       </div>
     </div>
 
@@ -2370,7 +2213,7 @@ function openDetail(round) {
               <span style="font-size:0.7rem;color:${clr};margin-left:4px">${f.label}</span>
             </div>
           </div>`;
-      }).join('')}
+      }).join("")}
     </div>
 
     ${predHTML}
@@ -2496,10 +2339,9 @@ document.getElementById("btn-add-save").addEventListener("click", async () => {
 
 // 予測
 document.getElementById("btn-predict").addEventListener("click", () => {
-  if(STATE.data.length < 10){ showToast("データが10件以上必要です","error"); return; }
+  if (STATE.data.length < 10) { showToast("データが10件以上必要です","error"); return; }
   const btn = document.getElementById("btn-predict");
   setLoading(btn, true);
-
   setTimeout(() => {
     try {
       const pA = predictRuleBased(STATE.data);
@@ -2508,24 +2350,14 @@ document.getElementById("btn-predict").addEventListener("click", () => {
       const pD = predictOccult(STATE.data);
       const pE = predictEnsemble(STATE.data);
 
-      const allPreds = [pA, pB, pC, pD, pE];
+      STATE.lastPredictions = [pA, pB, pC, pD, pE];
 
-      // ── スナップショット保存（予測実行時点で固定） ────────
-      const latestRound = STATE.data[STATE.data.length-1]?.round || 0;
-      const snapshot    = PredictionHistory.save(allPreds, latestRound);
-      showToast(
-        `第${snapshot.targetRound}回向け予測をスナップショット保存しました`,
-        "success",
-        4000
-      );
-
-      runGarapon(allPreds, () => {
-        renderPredictions(allPreds);
+    runGarapon([pA, pB, pC, pD, pE], () => {
+        renderPredictions([pA, pB, pC, pD, pE]);
         document.getElementById("predict-section").style.display = "block";
         document.getElementById("predict-section").scrollIntoView({behavior:"smooth"});
         showToast("予測完了！ 5パターン出力", "success");
       });
-
     } catch(e) {
       showToast("予測エラー: " + e.message, "error");
       console.error(e);
@@ -2534,7 +2366,6 @@ document.getElementById("btn-predict").addEventListener("click", () => {
     }
   }, 50);
 });
-
 
 // モーダル外クリックで閉じる
 document.querySelectorAll(".modal-overlay").forEach(ol => {
