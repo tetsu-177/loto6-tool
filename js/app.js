@@ -74,45 +74,94 @@ function getBallBg(n) {
 // ────────────────────────────────────────────────────────────
 // GitHub API
 // ────────────────────────────────────────────────────────────
+// async function apiGet() {
+//   const r = await fetch("/.netlify/functions/getData");
+//   if (!r.ok) throw new Error(`取得失敗: ${r.status}`);
+//   return await r.json();
+// }
+
+// async function apiSave(data, sha) {
+//   const r = await fetch("/.netlify/functions/saveData", {
+//     method:  "POST",
+//     headers: { "Content-Type": "application/json" },
+//     body:    JSON.stringify({ data, sha }),
+//   });
+//   if (!r.ok) throw new Error(`保存失敗: ${r.status}`);
+//   return await r.json();
+// }
+
+// async function loadData() {
+//   try {
+//     const res  = await apiGet();
+//     STATE.sha  = res.sha;
+//     STATE.data = (res.data.data || []).sort((a,b) => a.round - b.round);
+//     updateUI();
+//   } catch(e) {
+//     console.error(e);
+//     showToast("読み込みエラー: " + e.message, "error");
+//     updateUI();
+//   }
+// }
+
+// async function saveData() {
+//   const sorted  = [...STATE.data].sort((a,b) => b.round - a.round);
+//   const payload = {
+//     lastUpdated: sorted[0]?.date || "",
+//     totalRounds: STATE.data.length,
+//     data: sorted,
+//   };
+//   const res  = await apiSave(payload, STATE.sha);
+//   STATE.sha  = res.sha;
+// }
+
+//>>>>>>>>>>>>>>>ここからテスト用
+// ────────────────────────────────────────────────────────────
+// API・データ読み込み（ローカルJSON対応版）
+// ────────────────────────────────────────────────────────────
 async function apiGet() {
-  const r = await fetch("/.netlify/functions/getData");
-  if (!r.ok) throw new Error(`取得失敗: ${r.status}`);
+  // ① 取得先を Netlify Functions から ローカルの JSON ファイルに変更
+  const r = await fetch("data/loto6.json");
+  if (!r.ok) throw new Error(`JSON取得失敗: ${r.status} (data/loto6.jsonが見つかりません)`);
   return await r.json();
 }
 
 async function apiSave(data, sha) {
-  const r = await fetch("/.netlify/functions/saveData", {
-    method:  "POST",
-    headers: { "Content-Type": "application/json" },
-    body:    JSON.stringify({ data, sha }),
-  });
-  if (!r.ok) throw new Error(`保存失敗: ${r.status}`);
-  return await r.json();
+  // ローカル環境ではブラウザから直接ファイルを上書き保存できないため、
+  // エラーを返すようにするか、何もしないようにします。
+  throw new Error("ローカル環境のため保存機能は利用できません。");
 }
 
 async function loadData() {
   try {
-    const res  = await apiGet();
-    STATE.sha  = res.sha;
-    STATE.data = (res.data.data || []).sort((a,b) => a.round - b.round);
+    const res = await apiGet();
+    STATE.sha = null; // ローカルファイル読み込みなのでshaは不要
+
+    // ② JSONの構造に合わせて柔軟に配列を取り出す処理
+    // loto6.json の中身が [...] でも {"data": [...]} でも対応できるようにしています
+    let rawData = [];
+    if (Array.isArray(res)) {
+      rawData = res;
+    } else if (res.data && Array.isArray(res.data)) {
+      rawData = res.data;
+    } else if (res.data && res.data.data && Array.isArray(res.data.data)) {
+      rawData = res.data.data;
+    }
+
+    STATE.data = rawData.sort((a,b) => a.round - b.round);
     updateUI();
   } catch(e) {
     console.error(e);
     showToast("読み込みエラー: " + e.message, "error");
-    updateUI();
+    updateUI(); // エラー時は空データとしてUIを更新
   }
 }
 
 async function saveData() {
-  const sorted  = [...STATE.data].sort((a,b) => b.round - a.round);
-  const payload = {
-    lastUpdated: sorted[0]?.date || "",
-    totalRounds: STATE.data.length,
-    data: sorted,
-  };
-  const res  = await apiSave(payload, STATE.sha);
-  STATE.sha  = res.sha;
+  // ③ ブラウザからローカルのJSONは書き換えられないため、アラートを出して終了します
+  showToast("ブラウザからのデータ保存はローカル環境ではできません。", "error");
+  console.warn("保存機能を使用するには、Netlifyなどのサーバー環境が必要です。");
 }
+//>>>>>>>>>>>>>>>ここまでテスト用
 
 // ────────────────────────────────────────────────────────────
 // 分析
@@ -276,56 +325,423 @@ function weightedSample6(weights) {
   return res;
 }
 
+// ============================================================
+// LotoLearner - 動的学習・自己補正エンジン
+// predictRuleBased から呼ばれる。データが渡されるたびに再学習。
+// ============================================================
+class LotoLearner {
+  constructor() {
+    this.model   = null;
+    this.LOG_KEY = "loto6_learn_log";
+  }
+
+  // ──────────────────────────────────────────────────────────
+  // メイン学習メソッド
+  // data が更新されるたびに自動で再計算される
+  // ──────────────────────────────────────────────────────────
+  learn(data) {
+    const WINDOW = Math.min(200, data.length);
+    const recent = data.slice(-WINDOW);
+
+    const targetSum     = this._learnTargetSum(recent, data);
+    const targetConsec  = this._learnTargetConsec(recent);
+    const intervalHist  = this._learnIntervalHistogram(data);
+    const currIntervals = this._calcCurrentIntervals(data);
+    const numberWeights = this._calcNumberWeights(
+      data, intervalHist, currIntervals
+    );
+
+    this.model = {
+      targetSum,
+      targetConsec,
+      intervalHist,
+      currIntervals,
+      numberWeights,
+      learnedAt:  new Date().toISOString(),
+      dataSize:   data.length,
+      lastRound:  data[data.length-1]?.round,
+    };
+
+    this._saveLog();
+    this._printLog();
+    return this.model;
+  }
+
+  // ──────────────────────────────────────────────────────────
+  // ① Target Sum（目標合計値）の動的算出
+  //    全体平均 × 0.4  +  直近20回移動平均 × 0.3  +  線形回帰予測 × 0.3
+  // ──────────────────────────────────────────────────────────
+  _learnTargetSum(recent, allData) {
+    const sums      = recent.map(d => d.total);
+    const n         = sums.length;
+    const allSums   = allData.map(d => d.total);
+    const globalMean= allSums.reduce((a,b)=>a+b,0) / allSums.length;
+
+    // 直近20回の移動平均
+    const last20    = sums.slice(-20);
+    const movingAvg = last20.reduce((a,b)=>a+b,0) / last20.length;
+
+    // 直近30回の線形回帰
+    const reg  = sums.slice(-30);
+    const rn   = reg.length;
+    const xMu  = (rn-1)/2;
+    const yMu  = reg.reduce((a,b)=>a+b,0)/rn;
+    let   nm=0, dn=0;
+    reg.forEach((y,x)=>{ nm+=(x-xMu)*(y-yMu); dn+=(x-xMu)**2; });
+    const slope      = dn>0 ? nm/dn : 0;
+    const regNext    = slope*rn + (yMu - slope*xMu);
+
+    const value = globalMean*0.4 + movingAvg*0.3 + regNext*0.3;
+
+    return {
+      value:      Math.max(80, Math.min(200, value)),
+      globalMean: Math.round(globalMean*10)/10,
+      movingAvg:  Math.round(movingAvg*10)/10,
+      regNext:    Math.round(regNext*10)/10,
+      slope:      Math.round(slope*100)/100,
+    };
+  }
+
+  // ──────────────────────────────────────────────────────────
+  // ② Target Consec（目標連番ペア数）の動的算出
+  //    直近の連番ペア分布から期待値を計算
+  // ──────────────────────────────────────────────────────────
+  _learnTargetConsec(recent) {
+    const pairsArr = recent.map(d => countConsec(d.numbers).pairs);
+    const avg      = pairsArr.reduce((a,b)=>a+b,0) / pairsArr.length;
+    const dist     = {};
+    pairsArr.forEach(p => { dist[p] = (dist[p]||0)+1; });
+
+    // 確率分布
+    const prob = {};
+    Object.entries(dist).forEach(([k,v])=>{
+      prob[k] = v/pairsArr.length;
+    });
+
+    return {
+      value: avg,       // 0.88〜1.1付近が想定値
+      distribution: dist,
+      probability:  prob,
+    };
+  }
+
+  // ──────────────────────────────────────────────────────────
+  // ③ インターバルヒストグラムの学習
+  //    「X回休んだ数字が当選した」の頻度分布を構築
+  //    → どのインターバル帯が「当たりやすいか」を学習
+  // ──────────────────────────────────────────────────────────
+  _learnIntervalHistogram(data) {
+    const raw     = {};
+    for(let i=0;i<=60;i++) raw[i]=0;
+    raw["60+"] = 0;
+
+    const lastSeen = {};
+    CFG.NUMBERS.forEach(n => { lastSeen[n] = -1; });
+
+    data.forEach((draw, idx) => {
+      draw.numbers.forEach(num => {
+        if(lastSeen[num] >= 0){
+          const gap = idx - lastSeen[num] - 1;
+          if(gap <= 60) raw[gap]++;
+          else raw["60+"]++;
+        }
+        lastSeen[num] = idx;
+      });
+    });
+
+    const total = Object.values(raw).reduce((a,b)=>a+b,0);
+    const prob  = {};
+    Object.entries(raw).forEach(([k,v])=>{
+      prob[k] = total>0 ? v/total : 0;
+    });
+
+    // ピーク（最も当たりやすいインターバル）を算出
+    const peak = Object.entries(prob)
+      .filter(([k])=>k!=="60+")
+      .sort((a,b)=>b[1]-a[1])[0];
+
+    return { raw, prob, total, peakInterval: parseInt(peak[0]) };
+  }
+
+  // ──────────────────────────────────────────────────────────
+  // 各数字の現在インターバル（最後に出てから何回経過したか）
+  // ──────────────────────────────────────────────────────────
+  _calcCurrentIntervals(data) {
+    const n       = data.length;
+    const result  = {};
+    CFG.NUMBERS.forEach(num => {
+      let last = -1;
+      for(let i=n-1;i>=0;i--){
+        if(data[i].numbers.includes(num)){ last=i; break; }
+      }
+      result[num] = last>=0 ? n-1-last : n;
+    });
+    return result;
+  }
+
+  // ──────────────────────────────────────────────────────────
+  // ④ 各数字の基本ウェイト算出
+  //    複数の特徴量から合成スコアを算出（ハードフィルタなし）
+  // ──────────────────────────────────────────────────────────
+  _calcNumberWeights(data, hist, intervals) {
+    const n      = data.length;
+    const fm     = buildFreqMap(data);
+    const avgFreq= (n*6)/43;
+    const prob   = hist.prob;
+    const peak   = hist.peakInterval;
+    const result = {};
+
+    CFG.NUMBERS.forEach(num => {
+      const gap = intervals[num];
+
+      // (a) 学習済みインターバルスコア
+      //     現在の gap が過去の「当たりやすい間隔」に近いほど高評価
+      const gapKey       = gap<=60 ? gap : "60+";
+      const intervalScore= (prob[gapKey]||0) * 8.0;
+
+      // (b) ピーク近傍ボーナス
+      //     ピークインターバルの±2以内なら追加加点
+      const peakDist     = Math.abs(gap - peak);
+      const peakBonus    = peakDist<=2 ? (1-(peakDist*0.15))*0.4 : 0;
+
+      // (c) ショートバウンスボーナス（1〜3回休み）
+      const shortBonus   = (gap>=1 && gap<=3) ? 0.35 : 0;
+
+      // (d) ディープスリーパーボーナス（20回以上未出現）
+      const deepBonus    = gap>=20 ? Math.min((gap-20)*0.015, 0.45) : 0;
+
+      // (e) 出現頻度の均等性スコア
+      //     過度に多い/少ないは減点（中程度が高評価）
+      const freqDev  = Math.abs(fm[num]-avgFreq)/(avgFreq+1e-9);
+      const freqScore= Math.max(0, 1-freqDev*0.6);
+
+      // (f) 直近20回トレンドスコア（出現多→評価やや高め）
+      const r20      = data.slice(-20);
+      const r20cnt   = r20.reduce((s,d)=>s+(d.numbers.includes(num)?1:0),0);
+      const trendScore= r20cnt/20;
+
+      result[num] =
+        intervalScore +
+        peakBonus     +
+        shortBonus    +
+        deepBonus     +
+        freqScore     +
+        trendScore;
+    });
+
+    return result;
+  }
+
+  // ──────────────────────────────────────────────────────────
+  // 組み合わせの最終スコア（ロス関数）
+  //
+  //   score = ウェイト合計
+  //         - α × Loss_Sum   （合計値が目標からズレた分を減点）
+  //         - β × Loss_Consec（連番が目標からズレた分を減点）
+  //
+  //   ハードフィルタ（if文での強制除外）は一切使わない
+  //   ズレの大小をスコアに反映するだけ
+  // ──────────────────────────────────────────────────────────
+  scoreComboByLoss(combo, alpha=1.2, beta=0.6) {
+    const m      = this.model;
+    if(!m) return 0;
+
+    const sorted = [...combo].sort((a,b)=>a-b);
+    const total  = sorted.reduce((a,b)=>a+b,0);
+    const {pairs}= countConsec(sorted);
+
+    // 個別数字のウェイト合計
+    const weightSum = sorted.reduce((s,n) => s+(m.numberWeights[n]||0), 0);
+
+    // ロス：目標値との差を0〜1に正規化
+    const lossSum    = Math.abs(total  - m.targetSum.value)    / 50;
+    const lossConsec = Math.abs(pairs  - m.targetConsec.value) / 3;
+
+    return weightSum - alpha*lossSum - beta*lossConsec;
+  }
+
+  // ──────────────────────────────────────────────────────────
+  // 学習ログをlocalStorageに保存（最大50件）
+  // ──────────────────────────────────────────────────────────
+  _saveLog() {
+    try {
+      const m    = this.model;
+      const logs = JSON.parse(localStorage.getItem(this.LOG_KEY)||"[]");
+
+      logs.push({
+        timestamp:   m.learnedAt,
+        dataSize:    m.dataSize,
+        lastRound:   m.lastRound,
+        targetSum:   m.targetSum,
+        targetConsec:Math.round(m.targetConsec.value*100)/100,
+        peakInterval:m.intervalHist.peakInterval,
+        topWeights:  Object.entries(m.numberWeights)
+          .sort((a,b)=>b[1]-a[1])
+          .slice(0,10)
+          .map(([n,w])=>({ num:parseInt(n), w:Math.round(w*1000)/1000 })),
+      });
+
+      if(logs.length > 50) logs.splice(0, logs.length-50);
+      localStorage.setItem(this.LOG_KEY, JSON.stringify(logs));
+    } catch(e) {
+      console.warn("ログ保存失敗:", e.message);
+    }
+  }
+
+  // ──────────────────────────────────────────────────────────
+  // 学習結果をコンソールに出力
+  // ──────────────────────────────────────────────────────────
+  _printLog() {
+    const m = this.model;
+    console.group("📊 LotoLearner 学習結果");
+    console.log(`📅 第${m.lastRound}回まで (${m.dataSize}件 / 直近200回を分析)`);
+    console.log(
+      `🎯 目標合計値: ${m.targetSum.value.toFixed(1)}`,
+      `(全体平均:${m.targetSum.globalMean} / 移動平均:${m.targetSum.movingAvg} / 回帰予測:${m.targetSum.regNext} / 傾き:${m.targetSum.slope})`
+    );
+    console.log(
+      `🔗 目標連番ペア: ${m.targetConsec.value.toFixed(2)}組`,
+      "分布:", m.targetConsec.distribution
+    );
+    console.log(`⏱ ピークインターバル: ${m.intervalHist.peakInterval}回休み`);
+    console.log(
+      "🔢 ウェイト上位10数字:",
+      Object.entries(m.numberWeights)
+        .sort((a,b)=>b[1]-a[1])
+        .slice(0,10)
+        .map(([n,w])=>`${n}番(${w.toFixed(2)})`)
+        .join(" / ")
+    );
+    console.groupEnd();
+  }
+
+  // ── 外部から呼び出し可能なユーティリティ ──────────────────
+  getLogs()   { try{ return JSON.parse(localStorage.getItem(this.LOG_KEY)||"[]"); }catch(e){ return []; } }
+  clearLogs() { localStorage.removeItem(this.LOG_KEY); console.log("学習ログをクリアしました"); }
+  printAllLogs() {
+    const logs = this.getLogs();
+    console.group(`📋 学習ログ一覧 (${logs.length}件)`);
+    logs.forEach((l,i) => {
+      console.log(
+        `[${i+1}] ${l.timestamp.slice(0,19)}`,
+        `第${l.lastRound}回`,
+        `目標合計:${l.targetSum.value.toFixed(1)}`,
+        `目標連番:${l.targetConsec}組`,
+        `peak:${l.peakInterval}回休み`
+      );
+    });
+    console.groupEnd();
+  }
+}
+
+// グローバルインスタンス（データ更新のたびに自動再学習）
+const LEARNER = new LotoLearner();
+
 // ────────────────────────────────────────────────────────────
 // 予測ロジック
 // ────────────────────────────────────────────────────────────
-
 // ============================================================
-// 修正② predictRuleBased - Pattern A
-// ルールベースで多数試行し、最もスコアの高い「組み合わせ」を選出
+// predictRuleBased - Pattern A
+// 動的学習モデルを使用したロス関数ベース予測
+//
+// フロー:
+//   1. LEARNER.learn(data) で自己学習・自己補正
+//   2. 重み付きサンプリングで 30,000 通りの組み合わせを生成
+//   3. 全組み合わせをロス関数でスコアリング（ハードフィルタなし）
+//   4. スコア上位 500 組を抽出
+//   5. 上位 500 組での各数字の出現回数を集計
+//   6. 最頻出 6 数字を最終予測として出力
 // ============================================================
 function predictRuleBased(data) {
-  const fm  = buildFreqMap(data);
-  const sd  = analyzeSum(data);
-  const wts = CFG.NUMBERS.map(n => Math.max(fm[n], 1));
+  // ── Step1: 学習（新データが渡されるたびに自動補正） ──────
+  const model = LEARNER.learn(data);
 
-  let bestCombo = null;
-  let collected = 0;
-  let attempts  = 0;
-  const SIMULATION = 500; // 最低500個の有効な組み合わせを探す
+  // ── Step2: サンプリング用ウェイト設定 ────────────────────
+  // 学習済みウェイトをサンプリングに使用
+  const weights = CFG.NUMBERS.map(n => {
+    const w = model.numberWeights[n] || 0;
+    return Math.max(w + 1.0, 0.1); // 最低ウェイトを保証
+  });
 
-  // ── フェーズ1: ルール適合の組み合わせを収集し、最高スコアを記録 ──
-  while(collected < SIMULATION && attempts < 600000) {
-    attempts++;
-    const c = weightedSample6(wts);
-    if(new Set(c).size < 6) continue;
-    if(!passesRules(c)) continue; // ここでルール（合計値・ゾーン等）を保証
-    
-    const r = scoreCombo(c, fm, sd.mean, sd.std);
-    if(!bestCombo || r.score > bestCombo.score) {
-      bestCombo = r;
-    }
-    collected++;
+  // ── Step3: 組み合わせ生成 & ロス関数スコアリング ─────────
+  const MAX_TRIALS  = 40000;  // UIフリーズ防止のキャップ
+  const TOP_K       = 500;    // スコア上位K件を抽出
+  const scoredCombos= [];
+
+  for(let i=0; i<MAX_TRIALS; i++){
+    const combo = weightedSample6(weights);
+    if(new Set(combo).size < 6) continue;
+
+    // ロス関数によるスコアリング（ハードフィルタなし）
+    const finalScore = LEARNER.scoreComboByLoss(combo);
+    scoredCombos.push({ combo, score: finalScore });
   }
 
-  // ── フェーズ2: 見つからなかった場合のフォールバック ──
-  if(!bestCombo) {
-    for(let i = 0; i < 5000; i++) {
-      const c = weightedSample6(wts);
-      if(new Set(c).size < 6) continue;
-      const r = scoreCombo(c, fm, sd.mean, sd.std);
-      if(!bestCombo || r.score > bestCombo.score) bestCombo = r;
-    }
-  }
+  // ── Step4: スコア上位 TOP_K を抽出 ──────────────────────
+  scoredCombos.sort((a,b) => b.score - a.score);
+  const topCombos = scoredCombos.slice(0, TOP_K);
+
+  // ── Step5: 上位 TOP_K での各数字の出現回数を集計 ─────────
+  const counter = {};
+  CFG.NUMBERS.forEach(n => (counter[n] = 0));
+  topCombos.forEach(({combo}) => {
+    combo.forEach(n => counter[n]++);
+  });
+
+  // ── Step6: 最頻出 6 数字を選出 ───────────────────────────
+  const top6 = Object.entries(counter)
+    .sort((a,b) => b[1]-a[1])
+    .slice(0, 6)
+    .map(([n]) => parseInt(n))
+    .sort((a,b) => a-b);
+
+  // ── 結果の評価値を計算（表示用） ─────────────────────────
+  const resultTotal    = top6.reduce((a,b)=>a+b,0);
+  const {pairs: resultPairs} = countConsec(top6);
+  const resultEv       = top6.filter(n=>n%2===0).length;
+  const resultCov      = Object.values(CFG.ZONES)
+    .filter(zr=>top6.some(n=>zr.includes(n))).length;
+  const resultScore    = LEARNER.scoreComboByLoss(top6);
+
+  // ── コンソールに詳細サマリーを出力 ───────────────────────
+  console.group("🎯 Pattern A 予測サマリー");
+  console.log(`試行: ${scoredCombos.length}回 / 上位${TOP_K}組から集計`);
+  console.log(
+    `目標合計値: ${model.targetSum.value.toFixed(1)} →`,
+    `結果: ${resultTotal}`,
+    `(差: ${Math.abs(resultTotal - model.targetSum.value).toFixed(1)})`
+  );
+  console.log(
+    `目標連番ペア: ${model.targetConsec.value.toFixed(2)}組 →`,
+    `結果: ${resultPairs}組`
+  );
+  console.log(
+    "出現頻度 TOP10:",
+    Object.entries(counter)
+      .sort((a,b)=>b[1]-a[1])
+      .slice(0,10)
+      .map(([n,c])=>`${n}番:${c}回`)
+      .join(" / ")
+  );
+  console.log(`予測: [${top6.join(", ")}]  ロススコア: ${resultScore.toFixed(4)}`);
+  console.groupEnd();
 
   return {
-    ...bestCombo,
-    pattern: "A",
-    label:   "ルールベース予測",
-    method:  `RuleBase ${collected}個の有効セットから最高スコアを選出`,
+    numbers:      top6,
+    total:        resultTotal,
+    score:        Math.max(0, Math.min(1, (resultScore+2)/6)),
+    evenCnt:      resultEv,
+    oddCnt:       6-resultEv,
+    pairs:        resultPairs,
+    coveredZones: resultCov,
+    pattern:      "A",
+    label:        "動的学習予測（ML）",
+    method:
+      `LossFunc | 目標合計:${model.targetSum.value.toFixed(0)} ` +
+      `目標連番:${model.targetConsec.value.toFixed(1)}組 ` +
+      `peakInterval:${model.intervalHist.peakInterval}回休み`,
   };
 }
-
 
 // ============================================================
 // 修正③ predictStatistical - Pattern B
@@ -655,6 +1071,449 @@ function predictTransition(data) {
   };
 }
 
+// ============================================================
+// Pattern D: バランス＆逆張り理論特化予測
+// 偶奇/高低のバランス、合計値のトレンド逆張り、位の偏り排除を厳密に適用
+// ============================================================
+function predictOccult(data) {
+  if (data.length < 5) return predictRuleBased(data);
+
+  // ── 1. 過去データのトレンド分析 ──
+  // ① 過去5回の偶奇カウント（逆張り用）
+  const last5 = data.slice(-5);
+  let oddCount = 0, evenCount = 0;
+  last5.forEach(d => d.numbers.forEach(n => {
+    if (n % 2 !== 0) oddCount++;
+    else evenCount++;
+  }));
+
+  // ② 過去3回の合計値トレンド（2回連続増減の逆張り用）
+  const last3 = data.slice(-3);
+  let trendTarget = "none";
+  if (last3.length >= 3) {
+    const t1 = last3[0].total;
+    const t2 = last3[1].total;
+    const t3 = last3[2].total; // 前回
+    if (t1 < t2 && t2 < t3) trendTarget = "down"; // 増加続きなら下げる
+    if (t1 > t2 && t2 > t3) trendTarget = "up";   // 減少続きなら上げる
+  }
+
+  const prevTotal = data[data.length - 1].total;
+
+  // ③ 当選間隔（インターバル）の取得
+  const intervals = {};
+  CFG.NUMBERS.forEach(num => {
+    let interval = 40;
+    for (let i = data.length - 1; i >= 0; i--) {
+      if (data[i].numbers.includes(num)) { interval = data.length - 1 - i; break; }
+    }
+    intervals[num] = interval;
+  });
+
+  // ── 2. 厳格なバランスフィルター ──
+  function passesPatternDRules(nums, strict = true) {
+    const s = [...nums].sort((a, b) => a - b);
+    const total = s.reduce((a, b) => a + b, 0);
+
+    // 【1】 合計値ルール
+    if (total < 95 || total > 170) return false; // 95〜170のゾーンに収める
+    if (Math.abs(total - prevTotal) > 60) return false; // 前回からの上下は60以下
+
+    if (strict) {
+      // 合計値トレンドの逆張り
+      if (trendTarget === "down" && total >= prevTotal) return false;
+      if (trendTarget === "up" && total <= prevTotal) return false;
+    }
+
+    // 【2】 低い数字(1-22)と高い数字(23-43)のバランス
+    const lowCnt = s.filter(n => n <= 22).length;
+    if (lowCnt < 2 || lowCnt > 4) return false; // 最低2つは入れる (2:4, 3:3, 4:2)
+
+    // 【3】 偶奇のバランスと逆張り
+    const evCnt = s.filter(n => n % 2 === 0).length;
+    if (evCnt < 2 || evCnt > 4) return false; // 全部奇数・偶数はNG
+
+    if (strict) {
+      // 過去5回で倍以上偏っていたら逆張りする
+      if (oddCount >= evenCount * 2 && evCnt < 3) return false; // 奇数過多なら偶数狙い(3〜4個)
+      if (evenCount >= oddCount * 2 && evCnt > 3) return false; // 偶数過多なら奇数狙い(偶数は2〜3個)
+    }
+
+    // 【4】 連続数字の制限
+    let maxConsec = 1, curConsec = 1;
+    for (let i = 1; i < s.length; i++) {
+      if (s[i] === s[i - 1] + 1) { curConsec++; maxConsec = Math.max(maxConsec, curConsec); }
+      else curConsec = 1;
+    }
+    if (maxConsec >= 4) return false; // 4つ以上の連続はバランスが悪い
+
+    // 【5】 十の位と一の位の配慮
+    const tensCount = [0, 0, 0, 0, 0];
+    s.forEach(n => tensCount[Math.floor(n / 10)]++);
+    if (Math.max(...tensCount) >= 4) return false; // 同じ十の位に4つ以上固まるのはNG
+
+    if (strict) {
+      const tensTypes = tensCount.filter(c => c > 0).length;
+      if (tensTypes === 5) return false; // 全ての十の位が出る確率は10%未満なので排除
+    }
+
+    const ones = new Set(s.map(n => n % 10));
+    if (ones.size < 5) return false; // 一の位は5種類か6種類にする
+
+    // 【6】 当選間隔のバランス
+    const coldCnt = s.filter(n => intervals[n] >= 10).length;
+    if (coldCnt < 1 || coldCnt > 2) return false; // なかなか出ない数字を1〜2つだけ混ぜる
+
+    return true; // 全ての厳しい掟をクリア！
+  }
+
+  // ── 3. シミュレーション実行 ──
+  // 短期出現(ホット)を少し優先しつつランダム生成
+  const weights = CFG.NUMBERS.map(n => (intervals[n] < 10 ? 10 : 3));
+  let validCombos = [];
+  let attempts = 0;
+
+  // 厳格モードで探索
+  while (validCombos.length < 30 && attempts < 200000) {
+    attempts++;
+    const c = weightedSample6(weights);
+    if (new Set(c).size < 6) continue;
+    if (passesPatternDRules(c, true)) {
+      validCombos.push([...c].sort((a, b) => a - b));
+    }
+  }
+
+  // 条件が厳しすぎて見つからない場合は、トレンド逆張り等の条件を少し緩めて再探索
+  if (validCombos.length === 0) {
+    attempts = 0;
+    while (validCombos.length < 30 && attempts < 100000) {
+      attempts++;
+      const c = weightedSample6(weights);
+      if (new Set(c).size < 6) continue;
+      if (passesPatternDRules(c, false)) {
+        validCombos.push([...c].sort((a, b) => a - b));
+      }
+    }
+  }
+
+  // 1つ選出
+  const bestCombo = validCombos.length > 0 
+    ? validCombos[Math.floor(Math.random() * validCombos.length)]
+    : weightedSample6(weights).sort((a, b) => a - b); // 最終フォールバック
+
+  // ── 4. UI用パラメータの計算 ──
+  const total = bestCombo.reduce((a, b) => a + b, 0);
+  const evCnt = bestCombo.filter(n => n % 2 === 0).length;
+  const cov = Object.values(CFG.ZONES).filter(zr => bestCombo.some(n => zr.includes(n))).length;
+  let pairs = 0;
+  for (let i = 1; i < bestCombo.length; i++) {
+    if (bestCombo[i] === bestCombo[i - 1] + 1) pairs++;
+  }
+
+  return {
+    numbers: bestCombo,
+    score: 1.0, 
+    total: total,
+    evenCnt: evCnt,
+    oddCnt: 6 - evCnt,
+    pairs: pairs,
+    coveredZones: cov,
+    pattern: "D",
+    label: "バランス＆逆張り理論特化",
+    method: "高低/偶奇逆張り＋合計値トレンド＋十の位制限"
+  };
+}
+
+// ============================================================
+// Pattern E: 共鳴場アンサンブル予測（オリジナル最高傑作）
+//
+// コンセプト:
+//   5つの独立したサブモデルが「投票」し、
+//   最も多くのモデルに支持された数字を選出する。
+//   どれか1つのロジックに依存しない「集合知」アプローチ。
+//
+// サブモデル:
+//   #1 周期共鳴モデル    - インターバル分布の「共鳴点」を算出
+//   #2 ゾーン運動量モデル - 直近の偏りから「次に来るゾーン」を予測
+//   #3 共起相関モデル    - よく一緒に出る数字ペアの強さを評価
+//   #4 エントロピー最大化 - 予測不可能性を最大化する組み合わせを探索
+//   #5 逆バイアスモデル  - 長期データの統計から「割安な数字」を特定
+// ============================================================
+function predictEnsemble(data) {
+  if(data.length < 10) return predictRuleBased(data);
+
+  const fm    = buildFreqMap(data);
+  const n     = data.length;
+  const votes = {};
+  CFG.NUMBERS.forEach(num => (votes[num] = 0));
+
+  // ─────────────────────────────────────────────────────────
+  // サブモデル #1: 周期共鳴モデル
+  // 「過去に X 回休んだ数字が当たった」頻度分布を構築し、
+  // 現在のインターバルが「共鳴点」に近い数字を高評価
+  // ─────────────────────────────────────────────────────────
+  (function submodel1_periodResonance() {
+    const gapHist = {};
+    const lastSeen = {};
+    CFG.NUMBERS.forEach(num => (lastSeen[num] = -1));
+
+    data.forEach((draw, idx) => {
+      draw.numbers.forEach(num => {
+        if(lastSeen[num] >= 0){
+          const gap = idx - lastSeen[num] - 1;
+          gapHist[gap] = (gapHist[gap]||0) + 1;
+        }
+        lastSeen[num] = idx;
+      });
+    });
+
+    const totalGap = Object.values(gapHist).reduce((a,b)=>a+b,0);
+    const gapProb  = {};
+    Object.entries(gapHist).forEach(([k,v])=>{
+      gapProb[parseInt(k)] = v / totalGap;
+    });
+
+    // 各数字の現在インターバルと共鳴点スコアを算出
+    const resonScores = {};
+    CFG.NUMBERS.forEach(num => {
+      let last = -1;
+      for(let i=n-1;i>=0;i--){
+        if(data[i].numbers.includes(num)){ last=i; break; }
+      }
+      const gap    = last>=0 ? n-1-last : n;
+      const prob   = gapProb[gap] || 0;
+      const prob1  = gapProb[gap-1] || 0;
+      const prob2  = gapProb[gap+1] || 0;
+      resonScores[num] = prob*0.6 + prob1*0.2 + prob2*0.2;
+    });
+
+    // 上位20数字に投票（重み付き）
+    const sorted = Object.entries(resonScores)
+      .sort((a,b)=>b[1]-a[1]).slice(0,20);
+    sorted.forEach(([num,s],i) => {
+      votes[parseInt(num)] += Math.max(0, (20-i)) * s * 5;
+    });
+  })();
+
+  // ─────────────────────────────────────────────────────────
+  // サブモデル #2: ゾーン運動量モデル
+  // 直近10回のゾーン出現数を記録し、
+  // 「少ないゾーン（不足ゾーン）」の数字を優遇
+  // ─────────────────────────────────────────────────────────
+  (function submodel2_zoneMomentum() {
+    const recent10 = data.slice(-10);
+    const zoneNames = Object.keys(CFG.ZONES);
+
+    // 各ゾーンの直近10回平均出現数
+    const zoneAvg = {};
+    zoneNames.forEach(z => {
+      const cnt = recent10.reduce((s,d) =>
+        s + d.numbers.filter(num=>CFG.ZONES[z].includes(num)).length, 0);
+      zoneAvg[z] = cnt / 10;
+    });
+
+    // 全期間の各ゾーン平均（ベースライン）
+    const zoneBase = {};
+    zoneNames.forEach(z => {
+      const cnt = data.reduce((s,d) =>
+        s + d.numbers.filter(num=>CFG.ZONES[z].includes(num)).length, 0);
+      zoneBase[z] = cnt / n;
+    });
+
+    // ベースライン比で不足しているゾーンほどボーナス
+    const zoneBonus = {};
+    zoneNames.forEach(z => {
+      const deficit = zoneBase[z] - zoneAvg[z];
+      zoneBonus[z]  = Math.max(0, deficit) * 15;
+    });
+
+    CFG.NUMBERS.forEach(num => {
+      zoneNames.forEach(z => {
+        if(CFG.ZONES[z].includes(num)){
+          votes[num] += zoneBonus[z];
+        }
+      });
+    });
+  })();
+
+  // ─────────────────────────────────────────────────────────
+  // サブモデル #3: 共起相関モデル
+  // 直近100回の「同時出現行列」を構築し、
+  // 前回の当選番号と「共起スコアが高い」数字を優遇
+  // ─────────────────────────────────────────────────────────
+  (function submodel3_coOccurrence() {
+    const WINDOW = Math.min(100, n);
+    const recent = data.slice(-WINDOW);
+    const coMatrix = {};
+    CFG.NUMBERS.forEach(i => {
+      coMatrix[i] = {};
+      CFG.NUMBERS.forEach(j => (coMatrix[i][j] = 0));
+    });
+
+    recent.forEach(d => {
+      const nums = d.numbers;
+      for(let i=0;i<nums.length;i++){
+        for(let j=i+1;j<nums.length;j++){
+          coMatrix[nums[i]][nums[j]]++;
+          coMatrix[nums[j]][nums[i]]++;
+        }
+      }
+    });
+
+    const lastDraw = data[n-1].numbers;
+    CFG.NUMBERS.forEach(num => {
+      if(lastDraw.includes(num)) return;
+      const coScore = lastDraw.reduce((s,prev) =>
+        s + (coMatrix[prev][num]||0), 0);
+      votes[num] += coScore * 0.8;
+    });
+  })();
+
+  // ─────────────────────────────────────────────────────────
+  // サブモデル #4: エントロピー最大化
+  // 組み合わせとして「情報量が最大」になるものを探索
+  // 数字間の距離が均等に分布しているほど高評価
+  // ─────────────────────────────────────────────────────────
+  (function submodel4_entropyMax() {
+    const wts  = CFG.NUMBERS.map(num => Math.max(fm[num], 1));
+    let   best = null;
+    let   bestEntropy = -Infinity;
+
+    for(let i=0;i<8000;i++){
+      const combo  = weightedSample6(wts);
+      if(new Set(combo).size<6) continue;
+      const sorted = [...combo].sort((a,b)=>a-b);
+
+      // 数字間の差分の分散を計算（均等に分布=高エントロピー）
+      const diffs = [];
+      for(let j=1;j<sorted.length;j++){
+        diffs.push(sorted[j]-sorted[j-1]);
+      }
+      const diffMean = diffs.reduce((a,b)=>a+b,0)/diffs.length;
+      const diffVar  = diffs.reduce((s,d)=>s+(d-diffMean)**2,0)/diffs.length;
+      // 分散が小さい=均等分布=高エントロピー（逆数でスコア化）
+      const entropy  = 1 / (diffVar + 1);
+
+      if(entropy > bestEntropy){
+        bestEntropy = entropy;
+        best = sorted;
+      }
+    }
+
+    if(best) best.forEach(num => { votes[num] += bestEntropy * 30; });
+  })();
+
+  // ─────────────────────────────────────────────────────────
+  // サブモデル #5: 逆バイアスモデル
+  // 全体の出現率 vs 直近20回の出現率を比較し、
+  // 「全体では多いのに直近は少ない」＝割安な数字を発掘
+  // ─────────────────────────────────────────────────────────
+  (function submodel5_antiRecency() {
+    const r20 = data.slice(-20);
+    const r20freq = {};
+    CFG.NUMBERS.forEach(num => (r20freq[num] = 0));
+    r20.forEach(d => d.numbers.forEach(num => r20freq[num]++));
+
+    const globalAvg = (n * 6) / 43;
+    const r20Avg    = (20 * 6) / 43;
+
+    CFG.NUMBERS.forEach(num => {
+      const globalRate  = fm[num]    / globalAvg;
+      const recentRate  = r20freq[num] / r20Avg;
+      // 全体では多いのに直近は少ない = 割安（リバウンド期待）
+      const underVal    = globalRate - recentRate;
+      votes[num] += Math.max(0, underVal) * 12;
+    });
+  })();
+
+  // ─────────────────────────────────────────────────────────
+  // アンサンブル投票集計: 上位30数字から最適な6つを選出
+  // ─────────────────────────────────────────────────────────
+  const sortedByVotes = Object.entries(votes)
+    .sort((a,b) => b[1]-a[1])
+    .map(([num]) => parseInt(num));
+
+  const top30 = sortedByVotes.slice(0, 30);
+  const wts   = top30.map(n => Math.max(votes[n], 0.1));
+
+  const SIMULATION = 500;
+  const counter    = {};
+  CFG.NUMBERS.forEach(num => (counter[num] = 0));
+  let collected = 0;
+
+  // 500回サンプリング → 最頻出6数字を選出
+  for(let i=0; i<200000 && collected<SIMULATION; i++){
+    const pool    = [...top30];
+    const poolWts = [...wts];
+    const combo   = [];
+
+    while(combo.length < 6) {
+      const total = poolWts.reduce((a,b)=>a+b,0);
+      let   r     = Math.random() * total;
+      for(let j=0;j<pool.length;j++){
+        r -= poolWts[j];
+        if(r <= 0){
+          combo.push(pool[j]);
+          pool.splice(j,1);
+          poolWts.splice(j,1);
+          break;
+        }
+      }
+    }
+
+    if(new Set(combo).size < 6) continue;
+
+    const sorted = [...combo].sort((a,b)=>a-b);
+    const total  = sorted.reduce((a,b)=>a+b,0);
+    if(total < 80 || total > 180) continue;
+
+    combo.forEach(num => counter[num]++);
+    collected++;
+  }
+
+  // 最頻出6数字
+  const top6 = Object.entries(counter)
+    .sort((a,b) => b[1]-a[1])
+    .slice(0, 6)
+    .map(([n]) => parseInt(n))
+    .sort((a,b) => a-b);
+
+  const total     = top6.reduce((a,b)=>a+b,0);
+  const evenCnt   = top6.filter(n=>n%2===0).length;
+  const {pairs}   = countConsec(top6);
+  const cov       = Object.values(CFG.ZONES)
+    .filter(zr=>top6.some(n=>zr.includes(n))).length;
+
+  // コンソールログ
+  console.group("⚡ Pattern E アンサンブル結果");
+  console.log("投票TOP10:",
+    Object.entries(votes).sort((a,b)=>b[1]-a[1]).slice(0,10)
+      .map(([n,v])=>`${n}番(${v.toFixed(1)})`).join(" / "));
+  console.log("出現TOP10:",
+    Object.entries(counter).sort((a,b)=>b[1]-a[1]).slice(0,10)
+      .map(([n,c])=>`${n}番:${c}回`).join(" / "));
+  console.log(`予測: [${top6.join(", ")}]  合計:${total}  連番:${pairs}組`);
+  console.groupEnd();
+
+  const maxVote    = Object.values(votes).reduce((a,b)=>Math.max(a,b),0);
+  const scoreNorm  = top6.reduce((s,n)=>(s+votes[n]),0)/(6*maxVote+1e-9);
+
+  return {
+    numbers:      top6,
+    total,
+    score:        Math.max(0, Math.min(1, scoreNorm)),
+    evenCnt,
+    oddCnt:       6-evenCnt,
+    pairs,
+    coveredZones: cov,
+    pattern:      "E",
+    label:        "共鳴場アンサンブル",
+    method:       "5サブモデル投票 | 周期共鳴・ゾーン運動量・共起相関・エントロピー・逆バイアス",
+  };
+}
+
+
+
 // ────────────────────────────────────────────────────────────
 // ガラポン演出
 // ────────────────────────────────────────────────────────────
@@ -698,7 +1557,7 @@ function runGarapon(predictions, callback) {
         // 最後のボール
         if (idx === nums.length - 1) {
           setTimeout(() => {
-            subEl.textContent = "3パターンの予測結果を確認しましょう！";
+            subEl.textContent = "5パターンの予測結果を確認しましょう！";
             closeBtn.style.display = "block";
           }, 600);
         }
@@ -980,7 +1839,10 @@ function renderConsecStats(cd) {
 }
 
 function renderPredictions(preds) {
-  const pClass={A:"pattern-a",B:"pattern-b",C:"pattern-c"};
+  const pClass = {
+  A:"pattern-a", B:"pattern-b", C:"pattern-c",
+  D:"pattern-d", E:"pattern-e"
+};
   document.getElementById("prediction-grid").innerHTML = preds.map(p=>`
     <div class="prediction-card ${pClass[p.pattern]}">
       <div class="pattern-label">Pattern ${p.pattern} ｜ ${p.method}</div>
@@ -1267,24 +2129,22 @@ document.getElementById("btn-add-save").addEventListener("click", async () => {
 // 予測
 document.getElementById("btn-predict").addEventListener("click", () => {
   if (STATE.data.length < 10) { showToast("データが10件以上必要です","error"); return; }
-
   const btn = document.getElementById("btn-predict");
   setLoading(btn, true);
-
   setTimeout(() => {
     try {
       const pA = predictRuleBased(STATE.data);
       const pB = predictStatistical(STATE.data);
       const pC = predictTransition(STATE.data);
+      const pD = predictOccult(STATE.data);
+      const pE = predictEnsemble(STATE.data);
 
-      // ガラポン演出 → 完了後に結果表示
-      runGarapon([pA, pB, pC], () => {
-        renderPredictions([pA, pB, pC]);
+      runGarapon([pA, pB, pC, pD, pE], () => {
+        renderPredictions([pA, pB, pC, pD, pE]);
         document.getElementById("predict-section").style.display = "block";
         document.getElementById("predict-section").scrollIntoView({behavior:"smooth"});
-        showToast("予測完了！", "success");
+        showToast("予測完了！ 5パターン出力", "success");
       });
-
     } catch(e) {
       showToast("予測エラー: " + e.message, "error");
       console.error(e);
