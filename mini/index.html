@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ミニロト 予測ツール</title>
+  <link rel="stylesheet" href="css/style.css" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+</head>
+<body>
+
+<header>
+  <h1>🎯 ミニロト 予測ツール</h1>
+  <div class="data-count" id="data-count">読み込み中...</div>
+</header>
+
+<main>
+
+  <div class="card">
+    <div class="action-bar">
+      <button class="btn btn-secondary" id="btn-list">📋 過去データ一覧</button>
+      <button class="btn btn-secondary" id="btn-add-one">➕ 最新番号を追加</button>
+      <button class="btn btn-primary btn-lg" id="btn-predict" style="margin-left:auto">
+        🔮 予測する
+      </button>
+    </div>
+  </div>
+
+  <div class="card" id="stats-section" style="display:none">
+    <div class="card-title"><span class="icon">📊</span> データ概要</div>
+    <div class="stats-grid" id="stats-grid"></div>
+  </div>
+
+  <div class="card" id="analysis-section" style="display:none">
+    <div class="card-title"><span class="icon">🔍</span> 分析</div>
+    <div class="tabs">
+      <button class="tab-btn active" data-tab="tab-freq">出現頻度</button>
+      <button class="tab-btn" data-tab="tab-sum">合計値推移</button>
+      <button class="tab-btn" data-tab="tab-zone">ゾーン分布</button>
+      <button class="tab-btn" data-tab="tab-consec">連番分析</button>
+    </div>
+
+    <div class="tab-content active" id="tab-freq">
+      <div class="chart-grid">
+        <div class="chart-card full-width">
+          <h3>数字別 出現回数（1〜31）</h3>
+          <div class="chart-wrapper"><canvas id="chart-freq"></canvas></div>
+        </div>
+      </div>
+      <div class="freq-grid" id="freq-grid" style="margin-top:16px"></div>
+    </div>
+
+    <div class="tab-content" id="tab-sum">
+      <div class="chart-grid">
+        <div class="chart-card full-width">
+          <h3>合計値 推移（直近100回）</h3>
+          <div class="chart-wrapper tall"><canvas id="chart-sum"></canvas></div>
+        </div>
+        <div class="chart-card">
+          <h3>合計値 分布</h3>
+          <div class="chart-wrapper"><canvas id="chart-sum-hist"></canvas></div>
+        </div>
+        <div class="chart-card">
+          <h3>統計情報</h3>
+          <div id="sum-stats" style="margin-top:8px"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="tab-content" id="tab-zone">
+      <div class="chart-grid">
+        <div class="chart-card full-width">
+          <h3>ゾーン別 出現数（直近50回）</h3>
+          <div class="chart-wrapper tall"><canvas id="chart-zone"></canvas></div>
+        </div>
+        <div class="chart-card">
+          <h3>平均ゾーン分布</h3>
+          <div class="chart-wrapper"><canvas id="chart-zone-avg"></canvas></div>
+        </div>
+        <div class="chart-card">
+          <h3>ゾーン別 統計</h3>
+          <div id="zone-stats" style="margin-top:8px"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="tab-content" id="tab-consec">
+      <div class="chart-grid">
+        <div class="chart-card">
+          <h3>連番ペア数 分布</h3>
+          <div class="chart-wrapper"><canvas id="chart-consec"></canvas></div>
+        </div>
+        <div class="chart-card">
+          <h3>連番あり/なし</h3>
+          <div class="chart-wrapper"><canvas id="chart-consec-pie"></canvas></div>
+        </div>
+      </div>
+      <div id="consec-stats" style="margin-top:16px"></div>
+    </div>
+  </div>
+
+  <div class="card" id="predict-section" style="display:none">
+    <div class="card-title"><span class="icon">🏆</span> 予測結果</div>
+    <div class="prediction-grid" id="prediction-grid"></div>
+  </div>
+
+  <div class="card" id="empty-state">
+    <div class="empty-state">
+      <div class="icon">📭</div>
+      <p>データがありません。<br>「➕ 最新番号を追加」からデータを登録してください。</p>
+    </div>
+  </div>
+
+</main>
+
+<div id="garapon-overlay" class="garapon-overlay">
+  <div class="garapon-wrap">
+    <div class="garapon-title-text" id="garapon-title">🎰 抽選中...</div>
+    <div class="garapon-machine-wrap">
+      <div class="garapon-drum" id="garapon-drum">
+        <div class="drum-ring" id="drum-ring"></div>
+        <div class="drum-inner">
+          <div class="g-ball b1"></div>
+          <div class="g-ball b2"></div>
+          <div class="g-ball b3"></div>
+          <div class="g-ball b4"></div>
+          <div class="g-ball b5"></div>
+          <div class="g-ball b6"></div>
+          <div class="g-ball b7"></div>
+          <div class="g-ball b8"></div>
+        </div>
+      </div>
+      <div class="garapon-chute">
+        <div class="chute-body"></div>
+        <div class="chute-opening"></div>
+      </div>
+    </div>
+    <div class="ejected-balls" id="ejected-balls"></div>
+    <div class="garapon-sub" id="garapon-sub"></div>
+    <button class="btn btn-primary btn-lg" id="garapon-close-btn" style="display:none">
+      結果を見る →
+    </button>
+  </div>
+</div>
+
+<div class="modal-overlay" id="modal-list">
+  <div class="modal modal-wide">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+      <h2>📋 過去データ一覧</h2>
+      <button class="btn btn-secondary" id="btn-list-close" style="padding:6px 12px">✕</button>
+    </div>
+    <div class="list-search-bar">
+      <input type="text" id="list-search" placeholder="回号・日付で検索..." />
+    </div>
+    <div class="list-table-wrap" id="list-table-wrap">
+      </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="modal-detail">
+  <div class="modal">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">
+      <h2 id="detail-title">第 ○○○ 回</h2>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-secondary" id="btn-detail-back" style="padding:6px 12px">← 一覧</button>
+        <button class="btn btn-secondary" id="btn-detail-close" style="padding:6px 12px">✕</button>
+      </div>
+    </div>
+    <div id="detail-content"></div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="modal-add">
+  <div class="modal">
+    <h2>➕ 最新当選番号を追加</h2>
+    <p style="font-size:0.85rem;color:var(--text2);margin-bottom:16px">最新の当選番号を入力してください。</p>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
+      <div class="form-group">
+        <label for="add-round">回号</label>
+        <input type="number" id="add-round" placeholder="例: 1285" min="1" />
+      </div>
+      <div class="form-group">
+        <label for="add-date">日付</label>
+        <input type="text" id="add-date" placeholder="例: 2026/05/12" />
+      </div>
+    </div>
+    <div class="form-grid" style="grid-template-columns: repeat(5, 1fr);">
+      <div class="form-group">
+        <label for="add-n1">数字①</label>
+        <input type="number" id="add-n1" min="1" max="31" />
+      </div>
+      <div class="form-group">
+        <label for="add-n2">数字②</label>
+        <input type="number" id="add-n2" min="1" max="31" />
+      </div>
+      <div class="form-group">
+        <label for="add-n3">数字③</label>
+        <input type="number" id="add-n3" min="1" max="31" />
+      </div>
+      <div class="form-group">
+        <label for="add-n4">数字④</label>
+        <input type="number" id="add-n4" min="1" max="31" />
+      </div>
+      <div class="form-group">
+        <label for="add-n5">数字⑤</label>
+        <input type="number" id="add-n5" min="1" max="31" />
+      </div>
+      </div>
+    <div id="add-error" style="color:var(--hot);font-size:0.85rem;margin-top:8px;min-height:20px"></div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" id="btn-add-cancel">キャンセル</button>
+      <button class="btn btn-success" id="btn-add-save">💾 追加する</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast-container"></div>
+<script src="js/app.js"></script>
+</body>
+</html>
