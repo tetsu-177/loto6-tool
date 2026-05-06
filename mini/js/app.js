@@ -182,10 +182,10 @@ async function loadData() {
   try {
     const res = await apiGet();
     
-    // ★ここが原因でした！ GitHubの上書きに必要な sha をしっかり記憶させる
+    // GitHubの上書きに必要な sha をしっかり記憶させる
     STATE.sha = res.sha; 
 
-    // JSONの形式が 配列か、オブジェクト( {data: [...]} )かを判別して柔軟に読み込む
+    // JSONの形式が 配列か、オブジェクトかを判別して柔軟に読み込む
     let rawData = [];
     if (Array.isArray(res)) {
       rawData = res;
@@ -218,51 +218,6 @@ async function saveData() {
   
   // 保存に成功したら、新しく発行された鍵(sha)を記憶し直す
   STATE.sha = res.sha;
-}
-
-async function apiSave(data, sha) {
-  // 同様に保存時も saveMiniData を呼び出す
-  const r = await fetch("/.netlify/functions/saveMiniData", {
-    method:  "POST",
-    headers: { "Content-Type": "application/json" },
-    body:    JSON.stringify({ data, sha }),
-  });
-  if (!r.ok) throw new Error(`保存失敗: ${r.status}`);
-  return await r.json();
-}
-
-async function apiSave(data, sha) {
-  const r = await fetch("/.netlify/functions/saveData", {
-    method:  "POST",
-    headers: { "Content-Type": "application/json" },
-    body:    JSON.stringify({ data, sha }),
-  });
-  if (!r.ok) throw new Error(`保存失敗: ${r.status}`);
-  return await r.json();
-}
-
-async function loadData() {
-  try {
-    const res  = await apiGet();
-    STATE.sha  = res.sha;
-    STATE.data = (res.data.data || []).sort((a,b) => a.round - b.round);
-    updateUI();
-  } catch(e) {
-    console.error(e);
-    showToast("読み込みエラー: " + e.message, "error");
-    updateUI();
-  }
-}
-
-async function saveData() {
-  const sorted  = [...STATE.data].sort((a,b) => b.round - a.round);
-  const payload = {
-    lastUpdated: sorted[0]?.date || "",
-    totalRounds: STATE.data.length,
-    data: sorted,
-  };
-  const res  = await apiSave(payload, STATE.sha);
-  STATE.sha  = res.sha;
 }
 
 // ────────────────────────────────────────────────────────────
