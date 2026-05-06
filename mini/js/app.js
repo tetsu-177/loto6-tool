@@ -374,7 +374,7 @@ class LotoLearner {
     const currIntervals = this._calcCurrentIntervals(data);
     
     // ★修正: 直近10回分の当選番号をまとめて記憶させる
-    const recentDraws = data.slice(-10).map(d => d.numbers);
+    const recentDraws = data.slice(-50).map(d => d.numbers);
     const lastDraw = recentDraws[recentDraws.length - 1] || [];
 
     const numberWeights = this._calcNumberWeights(data, intervalHist, currIntervals, lastDraw);
