@@ -157,34 +157,29 @@ function getBallBg(n) {
 }
 
 // ────────────────────────────────────────────────────────────
-// API・データ読み込み（ローカルJSON対応版）
+// GitHub API
 // ────────────────────────────────────────────────────────────
 async function apiGet() {
-  const timestamp = new Date().getTime();
-  const r = await fetch("./data/mini.json?t=" + timestamp);
-  if (!r.ok) throw new Error(`JSON取得失敗: ${r.status} (data/mini.jsonが見つかりません)`);
+  const r = await fetch("/.netlify/functions/getData");
+  if (!r.ok) throw new Error(`取得失敗: ${r.status}`);
   return await r.json();
 }
 
 async function apiSave(data, sha) {
-  throw new Error("ローカル環境のため保存機能は利用できません。");
+  const r = await fetch("/.netlify/functions/saveData", {
+    method:  "POST",
+    headers: { "Content-Type": "application/json" },
+    body:    JSON.stringify({ data, sha }),
+  });
+  if (!r.ok) throw new Error(`保存失敗: ${r.status}`);
+  return await r.json();
 }
 
 async function loadData() {
   try {
-    const res = await apiGet();
-    STATE.sha = null; 
-
-    let rawData = [];
-    if (Array.isArray(res)) {
-      rawData = res;
-    } else if (res.data && Array.isArray(res.data)) {
-      rawData = res.data;
-    } else if (res.data && res.data.data && Array.isArray(res.data.data)) {
-      rawData = res.data.data;
-    }
-
-    STATE.data = rawData.sort((a,b) => a.round - b.round);
+    const res  = await apiGet();
+    STATE.sha  = res.sha;
+    STATE.data = (res.data.data || []).sort((a,b) => a.round - b.round);
     updateUI();
   } catch(e) {
     console.error(e);
@@ -194,8 +189,14 @@ async function loadData() {
 }
 
 async function saveData() {
-  showToast("ブラウザからのデータ保存はローカル環境ではできません。", "error");
-  console.warn("保存機能を使用するには、Netlifyなどのサーバー環境が必要です。");
+  const sorted  = [...STATE.data].sort((a,b) => b.round - a.round);
+  const payload = {
+    lastUpdated: sorted[0]?.date || "",
+    totalRounds: STATE.data.length,
+    data: sorted,
+  };
+  const res  = await apiSave(payload, STATE.sha);
+  STATE.sha  = res.sha;
 }
 
 // ────────────────────────────────────────────────────────────
