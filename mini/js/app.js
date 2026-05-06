@@ -373,8 +373,9 @@ class LotoLearner {
     const intervalHist  = this._learnIntervalHistogram(data);
     const currIntervals = this._calcCurrentIntervals(data);
     
-    // ★追加: 前回の当選番号をモデルに記憶させる
-    const lastDraw = data[data.length-1]?.numbers || [];
+    // ★修正: 直近10回分の当選番号をまとめて記憶させる
+    const recentDraws = data.slice(-10).map(d => d.numbers);
+    const lastDraw = recentDraws[recentDraws.length - 1] || [];
 
     const numberWeights = this._calcNumberWeights(data, intervalHist, currIntervals, lastDraw);
 
@@ -384,7 +385,7 @@ class LotoLearner {
       intervalHist,
       currIntervals,
       numberWeights,
-      lastDraw, // ★記憶
+      recentDraws, // ★記憶
       learnedAt:  new Date().toISOString(),
       dataSize:   data.length,
       lastRound:  data[data.length-1]?.round,
@@ -496,10 +497,8 @@ class LotoLearner {
 
       const r20      = data.slice(-20);
       const r20cnt   = r20.reduce((s,d)=>s+(d.numbers.includes(num)?1:0),0);
-      // ★修正: 直近トレンドの重みを半減（引っ張られすぎ防止）
       const trendScore= (r20cnt/20) * 0.5;
 
-      // ★追加: 前回出た数字はマイナス評価をつけ、Aが全て引っ張るのを防ぐ
       const lastPenalty = lastDraw.includes(num) ? -0.5 : 0;
 
       result[num] = intervalScore + peakBonus + shortBonus + deepBonus + freqScore + trendScore + lastPenalty;
@@ -520,11 +519,18 @@ class LotoLearner {
     const lossSum    = Math.abs(total  - m.targetSum.value)    / 50;
     const lossConsec = Math.abs(pairs  - m.targetConsec.value) / 3;
 
-    // ★追加: 前回からの「引っ張り」が3つ以上ある場合、大減点（ロス追加）
-    const hitLast = sorted.filter(n => m.lastDraw.includes(n)).length;
-    const lossLast = hitLast >= 3 ? (hitLast - 2) * 1.5 : 0; 
+    // ★大改修: 直近10回分の履歴をチェックし、3個以上被ったら「マイナス100点」の一発退場
+    let historyPenalty = 0;
+    if (m.recentDraws) {
+      m.recentDraws.forEach((pastDraw) => {
+        const matchCount = sorted.filter(n => pastDraw.includes(n)).length;
+        if (matchCount >= 3) {
+          historyPenalty += 100; // 絶対に上位に残れないペナルティ
+        }
+      });
+    }
 
-    return weightSum - alpha*lossSum - beta*lossConsec - lossLast;
+    return weightSum - alpha*lossSum - beta*lossConsec - historyPenalty;
   }
 
   getTrendMessage(data) {
@@ -577,9 +583,9 @@ function predictRuleBased(data) {
   const weights = CFG.NUMBERS.map(n => Math.max((model.numberWeights[n] || 0) + 1.0, 0.1));
 
   const MAX_TRIALS  = 40000;
-  const TOP_K       = 500;
   const scoredCombos= [];
 
+  // 40,000回の組み合わせテスト
   for(let i=0; i<MAX_TRIALS; i++){
     const combo = weightedSample5(weights);
     if(new Set(combo).size < 5) continue;
@@ -588,27 +594,20 @@ function predictRuleBased(data) {
     scoredCombos.push({ combo, score: finalScore });
   }
 
+  // スコア順に並び替え
   scoredCombos.sort((a,b) => b.score - a.score);
-  const topCombos = scoredCombos.slice(0, TOP_K);
 
-  const counter = {};
-  CFG.NUMBERS.forEach(n => (counter[n] = 0));
-  topCombos.forEach(({combo}) => { combo.forEach(n => counter[n]++); });
+  // ★大改修: バラして集計するのをやめ、「厳しい審査を1位で通過した最高の1組」をそのまま採用する
+  const bestCombo = scoredCombos[0].combo;
+  const resultScore = scoredCombos[0].score;
 
-  const top5 = Object.entries(counter)
-    .sort((a,b) => b[1]-a[1])
-    .slice(0, 5)
-    .map(([n]) => parseInt(n))
-    .sort((a,b) => a-b);
-
-  const resultTotal    = top5.reduce((a,b)=>a+b,0);
-  const {pairs: resultPairs} = countConsec(top5);
-  const resultEv       = top5.filter(n=>n%2===0).length;
-  const resultCov      = Object.values(CFG.ZONES).filter(zr=>top5.some(n=>zr.includes(n))).length;
-  const resultScore    = LEARNER.scoreComboByLoss(top5);
+  const resultTotal    = bestCombo.reduce((a,b)=>a+b,0);
+  const {pairs: resultPairs} = countConsec(bestCombo);
+  const resultEv       = bestCombo.filter(n=>n%2===0).length;
+  const resultCov      = Object.values(CFG.ZONES).filter(zr=>bestCombo.some(n=>zr.includes(n))).length;
 
   return {
-    numbers:      top5,
+    numbers:      bestCombo,
     total:        resultTotal,
     score:        Math.max(0, Math.min(1, (resultScore+2)/5)), 
     evenCnt:      resultEv,
@@ -616,8 +615,8 @@ function predictRuleBased(data) {
     pairs:        resultPairs,
     coveredZones: resultCov,
     pattern:      "A",
-    label:        "動的学習予測（ML）",
-    method:       `LossFunc | 目標合計:${model.targetSum.value.toFixed(0)} 目標連番:${model.targetConsec.value.toFixed(1)}組`,
+    label:        "動的学習予測（最高スコア抽出）",
+    method:       `LossFunc | 目標合計:${model.targetSum.value.toFixed(0)} 目標連番:${model.targetConsec.value.toFixed(1)}組 (丸被り排除)`,
   };
 }
 
