@@ -2160,52 +2160,7 @@ document.getElementById("btn-add-save").addEventListener("click", async () => {
   }
 });
 
-// // 予測
-// document.getElementById("btn-predict").addEventListener("click", () => {
-//   if(STATE.data.length < 10){ showToast("データが10件以上必要です","error"); return; }
-//   const btn = document.getElementById("btn-predict");
-//   setLoading(btn, true);
-
-//   setTimeout(() => {
-//     try {
-//       // ★ 存在する3つの関数だけを呼び出す！
-//       const pA = predictRuleBased(STATE.data);
-//       const pB = predictUltimate(STATE.data);
-//       const pC = predictPatternC(STATE.data); // 引数は data だけでOK
-
-//       // UIのCSSが崩れないようにパターン名（A, B, C）を割り当て
-//       pA.pattern = "A";
-//       pB.pattern = "B";
-//       pC.pattern = "C";
-
-//       const allPreds = [pA, pB, pC];
-
-//       // ── スナップショット保存（予測実行時点で固定） ────────
-//       const latestRound = STATE.data[STATE.data.length-1]?.round || 0;
-//       const snapshot    = PredictionHistory.save(allPreds, latestRound);
-//       showToast(
-//         `第${snapshot.targetRound}回向け予測をスナップショット保存しました`,
-//         "success",
-//         4000
-//       );
-
-//       runGarapon(allPreds, () => {
-//         renderPredictions(allPreds);
-//         document.getElementById("predict-section").style.display = "block";
-//         document.getElementById("predict-section").scrollIntoView({behavior:"smooth"});
-//         showToast("予測完了！ 3パターン出力", "success");
-//       });
-
-//     } catch(e) {
-//       showToast("予測エラー: " + e.message, "error");
-//       console.error(e);
-//     } finally {
-//       setLoading(btn, false);
-//     }
-//   }, 50);
-// });
-
-// // 予測　パターンC,C2,C3を表示
+// // 予測 パターンC以降を表示
 // document.getElementById("btn-predict").addEventListener("click", () => {
 //   if(STATE.data.length < 10){ showToast("データが10件以上必要です","error"); return; }
 //   const btn = document.getElementById("btn-predict");
