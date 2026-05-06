@@ -160,7 +160,8 @@ function getBallBg(n) {
 // API・データ読み込み（ローカルJSON対応版）
 // ────────────────────────────────────────────────────────────
 async function apiGet() {
-  const r = await fetch("data/mini.json");
+  const timestamp = new Date().getTime();
+  const r = await fetch("./data/mini.json?t=" + timestamp);
   if (!r.ok) throw new Error(`JSON取得失敗: ${r.status} (data/mini.jsonが見つかりません)`);
   return await r.json();
 }
@@ -287,25 +288,19 @@ function scoreCombo(nums, freqMap, sumMean, sumStd) {
   const cov = Object.values(CFG.ZONES)
     .filter(zr=>s.some(n=>zr.includes(n))).length;
 
-  // ── 出現頻度スコア ───────────────────────────
   const avgF = Object.values(freqMap).reduce((a,b)=>a+b,0) / 31;
   const fs   = s.reduce((sum,n) =>
     sum + Math.max(0, 1 - Math.abs(freqMap[n]-avgF) / (avgF+1e-9))
-  , 0) / 5; // ミニロト5個
+  , 0) / 5;
 
-  // ── プラトー型合計値スコア ────────────────────
-  // ミニロト黄金レンジ：65〜95
   const P_MIN = 65, P_MAX = 95;
   const ss =
     (t >= P_MIN && t <= P_MAX) ? 1.0 :
     t < P_MIN ? Math.max(0, 1 - (P_MIN - t) / 20) :
                 Math.max(0, 1 - (t - P_MAX) / 20);
 
-  // ── ゾーンスコア ─────────────────────────────
-  const zs = cov / 4; // ゾーンは4つ
+  const zs = cov / 4; 
 
-  // ── 連番スコア（実績に基づく自然分散型 50:50対応）──────────────────
-  // 0組と1組が半々で出るように、両方に満点(1.0)を与える
   const cs =
     pairs === 0 ? 1.00 :
     pairs === 1 ? 1.00 :
@@ -320,14 +315,14 @@ function scoreCombo(nums, freqMap, sumMean, sumStd) {
 
   return {
     numbers: s, score, total: t,
-    evenCnt: ev, oddCnt: 5-ev, // ミニロト5個
+    evenCnt: ev, oddCnt: 5-ev, 
     pairs, coveredZones: cov,
   };
 }
 
 function weightedSample5(weights) {
   const pool=[...CFG.NUMBERS], w=[...weights], res=[];
-  while(res.length<5) { // 5個
+  while(res.length<5) { 
     const tot=w.reduce((a,b)=>a+b,0);
     let r=Math.random()*tot;
     for (let i=0;i<pool.length;i++) {
@@ -540,7 +535,7 @@ const LEARNER = new LotoLearner();
 // 予測ロジック
 // ────────────────────────────────────────────────────────────
 // ============================================================
-// predictRuleBased - Pattern A
+// predictRuleBased - Pattern A (動的学習予測)
 // ============================================================
 function predictRuleBased(data) {
   const model = LEARNER.learn(data);
@@ -565,7 +560,6 @@ function predictRuleBased(data) {
   CFG.NUMBERS.forEach(n => (counter[n] = 0));
   topCombos.forEach(({combo}) => { combo.forEach(n => counter[n]++); });
 
-  // 最頻出5数字を選出
   const top5 = Object.entries(counter)
     .sort((a,b) => b[1]-a[1])
     .slice(0, 5)
@@ -581,7 +575,7 @@ function predictRuleBased(data) {
   return {
     numbers:      top5,
     total:        resultTotal,
-    score:        Math.max(0, Math.min(1, (resultScore+2)/5)), // ミニロト調整
+    score:        Math.max(0, Math.min(1, (resultScore+2)/5)), 
     evenCnt:      resultEv,
     oddCnt:       5-resultEv,
     pairs:        resultPairs,
@@ -593,7 +587,7 @@ function predictRuleBased(data) {
 }
 
 // ============================================================
-// Pattern B (predictUltimate): ミニロト黄金ゾーン
+// Pattern B (predictUltimate): 黄金ゾーン（裏方用）
 // ============================================================
 function predictUltimate(data, pA = null) {
   if (!pA) pA = predictRuleBased(data);
@@ -616,7 +610,6 @@ function predictUltimate(data, pA = null) {
   Object.keys(CFG.ZONES).forEach(zKey => {
     const nums = CFG.ZONES[zKey];
     const sortedNums = nums.map(num => ({ num, f: fm[num] || 0 })).sort((a,b) => b.f - a.f);
-    // 30番台は2個しかないので2つ、他は7つ
     const keepCount = zKey === "Zone4(30-31)" ? 2 : 7; 
     let pool = sortedNums.slice(0, keepCount).map(x => x.num);
 
@@ -626,7 +619,6 @@ function predictUltimate(data, pA = null) {
   });
 
   const zoneKeys = Object.keys(CFG.ZONES);
-  // 4ゾーンに5個を割り振るフォーメーション
   const layouts = [
     [1, 2, 2, 0], [2, 1, 2, 0], [1, 1, 2, 1], [1, 2, 1, 1], [2, 2, 1, 0]
   ];
@@ -653,7 +645,7 @@ function predictUltimate(data, pA = null) {
     if (seqCount > 2) continue;
 
     const total = combo.reduce((a, b) => a + b, 0);
-    if (total < 65 || total > 95) continue; // ミニロト黄金合計値
+    if (total < 65 || total > 95) continue; 
 
     let score = combo.reduce((acc, num) => acc + (fm[num] || 0), 0); 
     let pairScore = 0;
@@ -689,7 +681,7 @@ function predictUltimate(data, pA = null) {
     pairs: pairs,
     coveredZones: cov,
     pattern: "ULTIMATE",
-    label: "黄金ゾーン ＆ ペア相性特化",
+    label: "黄金ゾーン特化",
     method: "Aを参考に最強ペアの組み合わせを優先して構築"
   };
 }
@@ -704,7 +696,6 @@ function predictPatternC(data, pA = null, pB = null) {
   let bestBase = [];
   let appliedMethod = "";
 
-  // 1. Aの偏り検知（いずれかの番台に3個以上あるか）
   const isBiasedA = [
     [1, 9], [10, 19], [20, 29], [30, 31]
   ].some(range => pA.numbers.filter(n => n >= range[0] && n <= range[1]).length >= 3);
@@ -722,7 +713,6 @@ function predictPatternC(data, pA = null, pB = null) {
     let forcedA = [...strongANums];
     let forbiddenB_zones = [];
 
-    // 10, 20番台でAが「2個以上」出している番台を保護
     const tensRanges = [[10, 19], [20, 29]];
     tensRanges.forEach(range => {
       const aInZone = pA.numbers.filter(n => n >= range[0] && n <= range[1]);
@@ -742,7 +732,7 @@ function predictPatternC(data, pA = null, pB = null) {
       return true;
     });
 
-    let needed = 5 - fixedBase.length; // ミニロト: 5
+    let needed = 5 - fixedBase.length; 
 
     if (remainingB.length < needed) {
       let extraA = pA.numbers.filter(n => !fixedBase.includes(n));
@@ -771,7 +761,7 @@ function predictPatternC(data, pA = null, pB = null) {
 
         if (z20 >= 1 && z20 <= 2) score += 500; 
 
-        if (total >= 65 && total <= 95) score += 800; // 黄金レンジ
+        if (total >= 65 && total <= 95) score += 800; 
         else if (total > 95) score -= (total - 95) * 10;
         else if (total < 65) score -= (65 - total) * 10;
 
@@ -788,7 +778,7 @@ function predictPatternC(data, pA = null, pB = null) {
   bestBase.sort((a, b) => a - b);
   const finalNums = [];
 
-  // ── 精密補正ルール ──
+  // ── ミニロト用：全番台を最大±2に制限して揺らす ──
   bestBase.forEach(num => {
     let offset = 0;
     let isMatched = pA.numbers.includes(num) && pB.numbers.includes(num);
@@ -805,9 +795,9 @@ function predictPatternC(data, pA = null, pB = null) {
         offset = offsets.length > 0 ? offsets[Math.floor(Math.random() * offsets.length)] : 0;
       }
     } 
-    else if (num >= 10 && num <= 29) { // 10番台, 20番台
+    else if (num >= 10 && num <= 29) { 
       if (!isMatched) {
-        const offsets = [-3, -2, -1, 1, 2, 3]; 
+        const offsets = [-2, -1, 1, 2]; // ミニロト調整：±3を廃止し±2に
         offset = offsets[Math.floor(Math.random() * offsets.length)];
       }
     }
@@ -822,7 +812,6 @@ function predictPatternC(data, pA = null, pB = null) {
 
     let safeNum = num + offset;
 
-    // キャップ処理と衝突回避 (1〜31)
     if (safeNum < 1) safeNum = 1;
     if (safeNum > 31) safeNum = 31;
     
@@ -873,7 +862,7 @@ function predictPatternC(data, pA = null, pB = null) {
 }
 
 // ============================================================
-// Pattern C2 (predictPatternC2): 合計推移・連番収束 (50:50対応)
+// Pattern C2 (predictPatternC2): 合計推移・連番収束 (ミニロト特化±2)
 // ============================================================
 function predictPatternC2(data, pA = null, pB = null) {
   if (!pA) pA = predictRuleBased(data);
@@ -881,7 +870,6 @@ function predictPatternC2(data, pA = null, pB = null) {
 
   let baseNums = [...pA.numbers]; 
   
-  // 目標合計値の予測
   const recent = data.slice(-5).map(d => d.total);
   let trend = 0;
   for(let i=1; i<recent.length; i++) {
@@ -890,7 +878,7 @@ function predictPatternC2(data, pA = null, pB = null) {
   const avgDiff = trend / (recent.length - 1); 
   
   let predictedTotal = recent[recent.length - 1] + avgDiff;
-  predictedTotal = Math.round((predictedTotal * 0.7) + (80 * 0.3)); // 平均80
+  predictedTotal = Math.round((predictedTotal * 0.7) + (80 * 0.3)); 
   predictedTotal = Math.max(40, Math.min(120, predictedTotal));
 
   const getPairs = (arr) => {
@@ -904,7 +892,6 @@ function predictPatternC2(data, pA = null, pB = null) {
   let bestNums = [...baseNums];
   let maxScore = -Infinity;
 
-  // モンテカルロ試行
   for (let i = 0; i < 5000; i++) {
     let cand = [];
     
@@ -917,7 +904,8 @@ function predictPatternC2(data, pA = null, pB = null) {
         const offsets = [-1, 0, 1];
         offset = offsets[Math.floor(Math.random() * offsets.length)];
       } else {
-        const offsets = [-4, -3, -2, -1, 0, 1, 2, 3, 4];
+        // ミニロト調整：不一致の場合も±4を廃止し最大±2にする
+        const offsets = [-2, -1, 0, 1, 2];
         offset = offsets[Math.floor(Math.random() * offsets.length)];
       }
       cand.push(num + offset);
@@ -925,7 +913,7 @@ function predictPatternC2(data, pA = null, pB = null) {
     
     let isValid = true;
     for(let j=0; j<5; j++){
-      if(cand[j] < 1 || cand[j] > 31) isValid = false; // 1〜31
+      if(cand[j] < 1 || cand[j] > 31) isValid = false; 
     }
     if (!isValid) continue;
     
@@ -937,11 +925,10 @@ function predictPatternC2(data, pA = null, pB = null) {
     const diff = Math.abs(predictedTotal - currentTotal);
     const sumScore = Math.max(0, 100 - (diff * 3)); 
 
-    // ★連番ソフトスコア（0組と1組をどちらも満点の1.0にし、50:50に分散させる）
     const pairs = getPairs(cand);
     let pairMult = 1.0;
-    if (pairs === 0) pairMult = 1.0;      // 連番なし(50%)
-    else if (pairs === 1) pairMult = 1.0; // 連番あり1組(50%)
+    if (pairs === 0) pairMult = 1.0;      
+    else if (pairs === 1) pairMult = 1.0; 
     else if (pairs === 2) pairMult = 0.8; 
     else pairMult = 0.4;
 
@@ -968,58 +955,9 @@ function predictPatternC2(data, pA = null, pB = null) {
     coveredZones: cov,
     pattern: "C2",
     label: "パターン C2 (合計推移・ランダム補正)",
-    method: `A基準(±1/±4)から目標[${predictedTotal}]と連番期待値に合致するものを抽出`
+    method: `A基準(±1/±2)から目標[${predictedTotal}]と連番期待値に合致するものを抽出`
   };
 }
-
-// ============================================================
-// Pattern C3 (predictPatternC3): 二次ランダム補正
-// ============================================================
-function predictPatternC3(data, pC2) {
-  let baseNums = [...pC2.numbers];
-  let finalNums = [];
-
-  baseNums.forEach(num => {
-    const offsets = [-2, -1, 0, 1, 2];
-    const offset = offsets[Math.floor(Math.random() * offsets.length)];
-    let target = num + offset;
-
-    if (target < 1) target = 1;
-    if (target > 31) target = 31; // ミニロト上限
-
-    let step = (offset >= 0) ? 1 : -1;
-    while (finalNums.includes(target)) {
-      target += step;
-      if (target > 31) target = 1;
-      if (target < 1) target = 31;
-    }
-    finalNums.push(target);
-  });
-
-  finalNums.sort((a, b) => a - b);
-
-  const total = finalNums.reduce((a, b) => a + b, 0);
-  const evCnt = finalNums.filter(n => n % 2 === 0).length;
-  const cov = Object.values(CFG.ZONES).filter(zr => finalNums.some(n => zr.includes(n))).length;
-  let pairs = 0;
-  for(let i=1; i<finalNums.length; i++) {
-    if (finalNums[i] === finalNums[i-1] + 1) pairs++;
-  }
-
-  return {
-    numbers: finalNums,
-    total: total,
-    score: 1.0,
-    evenCnt: evCnt,
-    oddCnt: 5 - evCnt,
-    pairs: pairs,
-    coveredZones: cov,
-    pattern: "C3",
-    label: "パターン C3 (C2派生・二次補正)",
-    method: "C2の予測値をベースに、さらに各数字を±2の範囲でランダムに揺らして生成"
-  };
-}
-
 
 // ────────────────────────────────────────────────────────────
 // ガラポン演出
@@ -1840,6 +1778,7 @@ document.getElementById("btn-predict").addEventListener("click", () => {
   setTimeout(() => {
     try {
       const baseA = predictRuleBased(STATE.data);
+      // Bは裏方用として計算のみ実行
       const baseB = predictUltimate(STATE.data, baseA);
 
       const pC = predictPatternC(STATE.data, baseA, baseB);
@@ -1847,13 +1786,14 @@ document.getElementById("btn-predict").addEventListener("click", () => {
       
       const pC2 = predictPatternC2(STATE.data, baseA, baseB);
 
-      const pC3 = predictPatternC3(STATE.data, pC2);
+      // C3 は生成しない
 
-      pC.pattern = "A";   
-      pC2.pattern = "B";  
-      pC3.pattern = "C";  
+      // UI出力用に A, B, C のパターン名を割り振る
+      baseA.pattern = "A";   
+      pC.pattern = "B";  
+      pC2.pattern = "C";  
 
-      const allPreds = [pC, pC2, pC3];
+      const allPreds = [baseA, pC, pC2];
 
       const latestRound = STATE.data[STATE.data.length-1]?.round || 0;
       const snapshot    = PredictionHistory.save(allPreds, latestRound);
@@ -1867,7 +1807,7 @@ document.getElementById("btn-predict").addEventListener("click", () => {
         renderPredictions(allPreds);
         document.getElementById("predict-section").style.display = "block";
         document.getElementById("predict-section").scrollIntoView({behavior:"smooth"});
-        showToast("究極のCシリーズ 3パターン出力完了！", "success");
+        showToast("ミニロト 3パターン出力完了！", "success");
       });
 
     } catch(e) {
