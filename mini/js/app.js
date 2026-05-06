@@ -157,11 +157,23 @@ function getBallBg(n) {
 }
 
 // ────────────────────────────────────────────────────────────
-// GitHub API
+// GitHub API (ミニロト専用)
 // ────────────────────────────────────────────────────────────
 async function apiGet() {
-  const r = await fetch("/.netlify/functions/getData");
+  // ロト6と分けるため、getMiniData を呼び出す
+  const r = await fetch("/.netlify/functions/getMiniData");
   if (!r.ok) throw new Error(`取得失敗: ${r.status}`);
+  return await r.json();
+}
+
+async function apiSave(data, sha) {
+  // 同様に保存時も saveMiniData を呼び出す
+  const r = await fetch("/.netlify/functions/saveMiniData", {
+    method:  "POST",
+    headers: { "Content-Type": "application/json" },
+    body:    JSON.stringify({ data, sha }),
+  });
+  if (!r.ok) throw new Error(`保存失敗: ${r.status}`);
   return await r.json();
 }
 
