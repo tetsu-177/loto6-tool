@@ -445,7 +445,7 @@ class LotoLearner {
   // メイン学習メソッド
   // data が更新されるたびに自動で再計算される
   // ──────────────────────────────────────────────────────────
-  learn(data) {
+learn(data) {
     const WINDOW = Math.min(200, data.length);
     const recent = data.slice(-WINDOW);
 
@@ -453,9 +453,11 @@ class LotoLearner {
     const targetConsec  = this._learnTargetConsec(recent);
     const intervalHist  = this._learnIntervalHistogram(data);
     const currIntervals = this._calcCurrentIntervals(data);
-    const numberWeights = this._calcNumberWeights(
-      data, intervalHist, currIntervals
-    );
+
+    // ★修正: ロト6用に直近15回分の当選番号をまとめて記憶させる
+    const recentDraws = data.slice(-15).map(d => d.numbers);
+
+    const numberWeights = this._calcNumberWeights(data, intervalHist, currIntervals);
 
     this.model = {
       targetSum,
@@ -463,6 +465,7 @@ class LotoLearner {
       intervalHist,
       currIntervals,
       numberWeights,
+      recentDraws, // ★記憶
       learnedAt:  new Date().toISOString(),
       dataSize:   data.length,
       lastRound:  data[data.length-1]?.round,
@@ -471,6 +474,35 @@ class LotoLearner {
     this._saveLog();
     this._printLog();
     return this.model;
+  }
+
+  scoreComboByLoss(combo, alpha=1.2, beta=0.6) {
+    const m      = this.model;
+    if(!m) return 0;
+
+    const sorted = [...combo].sort((a,b)=>a-b);
+    const total  = sorted.reduce((a,b)=>a+b,0);
+    const {pairs}= countConsec(sorted);
+
+    const weightSum = sorted.reduce((s,n) => s+(m.numberWeights[n]||0), 0);
+
+    const lossSum    = Math.abs(total  - m.targetSum.value)    / 50;
+    const lossConsec = Math.abs(pairs  - m.targetConsec.value) / 3;
+
+    // ★大改修: 過去15回の履歴をチェック。4個以上の丸被りは「マイナス100点」で一発退場！
+    let historyPenalty = 0;
+    if (m.recentDraws) {
+      m.recentDraws.forEach((pastDraw) => {
+        const matchCount = sorted.filter(n => pastDraw.includes(n)).length;
+        if (matchCount >= 4) {
+          historyPenalty += 100; // ロト6は6個中4個被りでアウト
+        } else if (matchCount === 3) {
+          historyPenalty += 5;   // 3個被りも少しだけ警戒して減点
+        }
+      });
+    }
+
+    return weightSum - alpha*lossSum - beta*lossConsec - historyPenalty;
   }
 
   // ──────────────────────────────────────────────────────────
@@ -790,92 +822,36 @@ const LEARNER = new LotoLearner();
 // ────────────────────────────────────────────────────────────
 // ============================================================
 // predictRuleBased - Pattern A
-// 動的学習モデルを使用したロス関数ベース予測
-//
-// フロー:
-//   1. LEARNER.learn(data) で自己学習・自己補正
-//   2. 重み付きサンプリングで 30,000 通りの組み合わせを生成
-//   3. 全組み合わせをロス関数でスコアリング（ハードフィルタなし）
-//   4. スコア上位 500 組を抽出
-//   5. 上位 500 組での各数字の出現回数を集計
-//   6. 最頻出 6 数字を最終予測として出力
 // ============================================================
 function predictRuleBased(data) {
-  // ── Step1: 学習（新データが渡されるたびに自動補正） ──────
   const model = LEARNER.learn(data);
+  const weights = CFG.NUMBERS.map(n => Math.max((model.numberWeights[n] || 0) + 1.0, 0.1));
 
-  // ── Step2: サンプリング用ウェイト設定 ────────────────────
-  // 学習済みウェイトをサンプリングに使用
-  const weights = CFG.NUMBERS.map(n => {
-    const w = model.numberWeights[n] || 0;
-    return Math.max(w + 1.0, 0.1); // 最低ウェイトを保証
-  });
-
-  // ── Step3: 組み合わせ生成 & ロス関数スコアリング ─────────
-  const MAX_TRIALS  = 40000;  // UIフリーズ防止のキャップ
-  const TOP_K       = 500;    // スコア上位K件を抽出
+  const MAX_TRIALS  = 40000;
   const scoredCombos= [];
 
   for(let i=0; i<MAX_TRIALS; i++){
     const combo = weightedSample6(weights);
     if(new Set(combo).size < 6) continue;
 
-    // ロス関数によるスコアリング（ハードフィルタなし）
     const finalScore = LEARNER.scoreComboByLoss(combo);
     scoredCombos.push({ combo, score: finalScore });
   }
 
-  // ── Step4: スコア上位 TOP_K を抽出 ──────────────────────
+  // スコア順に並び替え
   scoredCombos.sort((a,b) => b.score - a.score);
-  const topCombos = scoredCombos.slice(0, TOP_K);
 
-  // ── Step5: 上位 TOP_K での各数字の出現回数を集計 ─────────
-  const counter = {};
-  CFG.NUMBERS.forEach(n => (counter[n] = 0));
-  topCombos.forEach(({combo}) => {
-    combo.forEach(n => counter[n]++);
-  });
+  // ★大改修: バラして集計するのをやめ、「厳しい審査を1位で通過した最高の1組」を採用
+  const bestCombo = scoredCombos[0].combo;
+  const resultScore = scoredCombos[0].score;
 
-  // ── Step6: 最頻出 6 数字を選出 ───────────────────────────
-  const top6 = Object.entries(counter)
-    .sort((a,b) => b[1]-a[1])
-    .slice(0, 6)
-    .map(([n]) => parseInt(n))
-    .sort((a,b) => a-b);
-
-  // ── 結果の評価値を計算（表示用） ─────────────────────────
-  const resultTotal    = top6.reduce((a,b)=>a+b,0);
-  const {pairs: resultPairs} = countConsec(top6);
-  const resultEv       = top6.filter(n=>n%2===0).length;
-  const resultCov      = Object.values(CFG.ZONES)
-    .filter(zr=>top6.some(n=>zr.includes(n))).length;
-  const resultScore    = LEARNER.scoreComboByLoss(top6);
-
-  // ── コンソールに詳細サマリーを出力 ───────────────────────
-  console.group("🎯 Pattern A 予測サマリー");
-  console.log(`試行: ${scoredCombos.length}回 / 上位${TOP_K}組から集計`);
-  console.log(
-    `目標合計値: ${model.targetSum.value.toFixed(1)} →`,
-    `結果: ${resultTotal}`,
-    `(差: ${Math.abs(resultTotal - model.targetSum.value).toFixed(1)})`
-  );
-  console.log(
-    `目標連番ペア: ${model.targetConsec.value.toFixed(2)}組 →`,
-    `結果: ${resultPairs}組`
-  );
-  console.log(
-    "出現頻度 TOP10:",
-    Object.entries(counter)
-      .sort((a,b)=>b[1]-a[1])
-      .slice(0,10)
-      .map(([n,c])=>`${n}番:${c}回`)
-      .join(" / ")
-  );
-  console.log(`予測: [${top6.join(", ")}]  ロススコア: ${resultScore.toFixed(4)}`);
-  console.groupEnd();
+  const resultTotal    = bestCombo.reduce((a,b)=>a+b,0);
+  const {pairs: resultPairs} = countConsec(bestCombo);
+  const resultEv       = bestCombo.filter(n=>n%2===0).length;
+  const resultCov      = Object.values(CFG.ZONES).filter(zr=>bestCombo.some(n=>zr.includes(n))).length;
 
   return {
-    numbers:      top6,
+    numbers:      bestCombo,
     total:        resultTotal,
     score:        Math.max(0, Math.min(1, (resultScore+2)/6)),
     evenCnt:      resultEv,
@@ -883,11 +859,8 @@ function predictRuleBased(data) {
     pairs:        resultPairs,
     coveredZones: resultCov,
     pattern:      "A",
-    label:        "動的学習予測（ML）",
-    method:
-      `LossFunc | 目標合計:${model.targetSum.value.toFixed(0)} ` +
-      `目標連番:${model.targetConsec.value.toFixed(1)}組 ` +
-      `peakInterval:${model.intervalHist.peakInterval}回休み`,
+    label:        "動的学習予測（最高スコア抽出）",
+    method:       `LossFunc | 目標合計:${model.targetSum.value.toFixed(0)} 目標連番:${model.targetConsec.value.toFixed(1)}組 (丸被り排除)`,
   };
 }
 
@@ -1022,13 +995,6 @@ function predictUltimate(data, pA = null) {
 
 // ============================================================
 // Pattern C (predictPatternC): 状況対応型・精密揺らぎ補正
-// 
-// コンセプト: 
-// 1. 【大偏り検知】Aに「同じ番台が3個以上」ある場合はUltimateを完全無視(全揺らし)。
-// 2. 【小トレンド検知】10〜30番台でAが「同じ番台を2個以上」出している場合、
-//    その番台はAの数字をそのまま採用し、Ultimateからの引用をブロック(侵入禁止)する。
-// 3. 【通常時】Aの強確信2個＋(小トレンド番台)＋残りをUltimateから型ハメで構築。
-// 4. 【精密補正】構築したベースに対し、番台ごとの指定ルールで揺らぎをかける。
 // ============================================================
 function predictPatternC(data, pA = null, pB = null) {
   if (!pA) pA = predictRuleBased(data); 
@@ -1037,40 +1003,34 @@ function predictPatternC(data, pA = null, pB = null) {
   let bestBase = [];
   let appliedMethod = "";
 
-  // ── 1. パターンAの大偏りを検知（いずれかの番台に3個以上あるか） ──
   const isBiasedA = [
     [1, 9], [10, 19], [20, 29], [30, 39], [40, 43]
   ].some(range => pA.numbers.filter(n => n >= range[0] && n <= range[1]).length >= 3);
 
   if (isBiasedA) {
-    // 【大波乱ルート】
     bestBase = [...pA.numbers];
     appliedMethod = "A大偏り検知(Ultimate無視) ＋ 全揺らし精密補正";
   } else {
-    // 【通常ルート ＋ 小トレンド保護】
     appliedMethod = "A番台トレンド優先 ＋ Ultimate型ハメ補正";
-
     const model = LEARNER.model || LEARNER.learn(data);
     const aWeights = pA.numbers.map(n => ({ num: n, weight: model.numberWeights[n] || 0 }));
     aWeights.sort((a, b) => b.weight - a.weight);
-    const strongANums = [aWeights[0].num, aWeights[1].num]; // Aの強確信トップ2
+    const strongANums = [aWeights[0].num, aWeights[1].num]; 
 
-    // ★追加ルール: 10, 20, 30番台でAが「2個以上」出している番台を保護
     let forcedA = [...strongANums];
-    let forbiddenB_zones = []; // Ultimateからの侵入を禁止する番台
+    let forbiddenB_zones = [];
 
     const tensRanges = [[10, 19], [20, 29], [30, 39]];
     tensRanges.forEach(range => {
       const aInZone = pA.numbers.filter(n => n >= range[0] && n <= range[1]);
       if (aInZone.length >= 2) {
-        forcedA.push(...aInZone); // Aの数字をベースに強制追加
-        forbiddenB_zones.push(range); // Bからのこの番台の追加をブロック
+        forcedA.push(...aInZone);
+        forbiddenB_zones.push(range); 
       }
     });
 
     let fixedBase = Array.from(new Set(forcedA));
 
-    // Ultimate(B)の残り候補をフィルタリング（固定済みのものと、禁止番台を除外）
     let remainingB = pB.numbers.filter(n => {
       if (fixedBase.includes(n)) return false;
       for (let range of forbiddenB_zones) {
@@ -1081,7 +1041,6 @@ function predictPatternC(data, pA = null, pB = null) {
 
     let needed = 6 - fixedBase.length;
 
-    // 万が一、残りのBだけでは足りない場合の安全策（Aの残りから補填）
     if (remainingB.length < needed) {
       let extraA = pA.numbers.filter(n => !fixedBase.includes(n));
       fixedBase.push(...extraA.slice(0, needed - remainingB.length));
@@ -1125,10 +1084,8 @@ function predictPatternC(data, pA = null, pB = null) {
       bestBase = [...fixedBase, ...remainingB.slice(0, needed)];
     }
 
-    // 40番台の強制補填ロジック
     const has40 = bestBase.some(n => n >= 40);
     if (!has40) {
-      // 捨てる候補は「A強制枠(fixedBase)」以外から選ぶ
       let bSourcedNums = bestBase.filter(n => !fixedBase.includes(n)).sort((a,b) => a - b);
       if (bSourcedNums.length > 0) {
         const toRemove = bSourcedNums[0];
@@ -1144,65 +1101,25 @@ function predictPatternC(data, pA = null, pB = null) {
   bestBase.sort((a, b) => a - b);
   const finalNums = [];
 
-  // ── 3. 各桁の精密補正ルールを適用（ルート問わず共通） ──
+  // ── ★修正: ロト6用に最大±3で「無条件に」ランダム揺らし（0を含む） ──
   bestBase.forEach(num => {
-    let offset = 0;
-    let isMatched = pA.numbers.includes(num) && pB.numbers.includes(num);
-    
-    // Aに強い大偏り(トレンド)がある波乱回は、一致保護を外して必ず揺らす
-    if (isBiasedA) {
-      isMatched = false;
-    }
-    
-    // 結界フラグ
-    let isZone1 = false; // 1〜9のベース数字用 (上限10)
-    let isZone5 = false; // 40〜43のベース数字用 (下限40)
+    let isZone1 = false;
+    let isZone5 = false;
+    let offsets = [-3, -2, -1, 0, 1, 2, 3]; // ロト6は43個あるので揺らぎを±3に
 
-    if (num >= 1 && num <= 9) {
+    if (num <= 9) {
       isZone1 = true;
-      if (isMatched) {
-        offset = 0; 
-      } else {
-        let offsets = [-2, -1, 1, 2];
-        offsets = offsets.filter(off => num + off <= 10);
-        offset = offsets.length > 0 ? offsets[Math.floor(Math.random() * offsets.length)] : 0;
-      }
+      offsets = offsets.filter(off => num + off <= 10);
     } 
-    else if (num >= 10 && num <= 19) {
-      if (isMatched) offset = 0; 
-      else {
-        const offsets = [-3, -2, -1]; 
-        offset = offsets[Math.floor(Math.random() * offsets.length)];
-      }
-    }
-    else if (num >= 20 && num <= 29) {
-      if (isMatched) offset = 0; 
-      else {
-        const offsets = [-3, -2, -1, 1, 2, 3];
-        offset = offsets[Math.floor(Math.random() * offsets.length)];
-      }
-    }
-    else if (num >= 30 && num <= 39) {
-      if (isMatched) offset = 0; 
-      else {
-        const offsets = [-3, -2, -1, 1, 2, 3];
-        offset = offsets[Math.floor(Math.random() * offsets.length)];
-      }
-    }
-    else if (num >= 40 && num <= 43) {
+    else if (num >= 40) {
       isZone5 = true;
-      if (isMatched) {
-        offset = 0;
-      } else {
-        let offsets = [-3, -2, -1, 1, 2, 3];
-        offsets = offsets.filter(off => (num + off >= 40) && (num + off <= 43));
-        offset = offsets.length > 0 ? offsets[Math.floor(Math.random() * offsets.length)] : 0;
-      }
+      offsets = offsets.filter(off => num + off >= 40);
     }
 
+    let offset = offsets[Math.floor(Math.random() * offsets.length)];
     let safeNum = num + offset;
 
-    // ── 4. キャップ処理と衝突回避 ──
+    // 範囲ガード
     if (safeNum < 1) safeNum = 1;
     if (safeNum > 43) safeNum = 43;
     
@@ -1214,7 +1131,6 @@ function predictPatternC(data, pA = null, pB = null) {
 
     while (finalNums.includes(safeNum)) {
       safeNum += step;
-      
       if (isZone1) {
         if (safeNum > 10) safeNum = 1;
         if (safeNum < 1) safeNum = 10;
@@ -1254,13 +1170,7 @@ function predictPatternC(data, pA = null, pB = null) {
 }
 
 // ============================================================
-// Pattern C2 (predictPatternC2): Aベース・合計推移＋連番収束（ランダム補正版）
-// 
-// コンセプト: 
-// 1. パターンAを完全ベースとし、確率（頻度）による選別を排除。
-// 2. 一致±1 / 不一致±4 のランダムな揺らぎを数千回テスト。
-// 3. 「目標合計値への近さ」と「連番期待値(1組)」の2軸のみで評価し、
-//    条件に合致するものをランダムに抽出する。
+// Pattern C2 (predictPatternC2): 合計推移・連番収束 (ランダム補正版)
 // ============================================================
 function predictPatternC2(data, pA = null, pB = null) {
   if (!pA) pA = predictRuleBased(data);
@@ -1268,7 +1178,6 @@ function predictPatternC2(data, pA = null, pB = null) {
 
   let baseNums = [...pA.numbers]; 
   
-  // ── 1. 目標合計値の予測（トレンド） ──
   const recent = data.slice(-5).map(d => d.total);
   let trend = 0;
   for(let i=1; i<recent.length; i++) {
@@ -1291,29 +1200,19 @@ function predictPatternC2(data, pA = null, pB = null) {
   let bestNums = [...baseNums];
   let maxScore = -Infinity;
 
-  // ── 2. モンテカルロ試行（5,000回） ──
   for (let i = 0; i < 5000; i++) {
     let cand = [];
     
-    // パターンAをベースに、ルールに基づいたランダム補正を適用
     for (let j = 0; j < 6; j++) {
       let num = baseNums[j];
-      let isMatched = pB.numbers.includes(num);
-      let offset = 0;
       
-      if (isMatched && num < 40) {
-        // 一致(40代除): ±1の範囲でランダム
-        const offsets = [-1, 0, 1];
-        offset = offsets[Math.floor(Math.random() * offsets.length)];
-      } else {
-        // 不一致 or 40代: ±4の範囲でランダム
-        const offsets = [-4, -3, -2, -1, 0, 1, 2, 3, 4];
-        offset = offsets[Math.floor(Math.random() * offsets.length)];
-      }
+      // ★修正: 忖度なし！すべての数字を無条件で [-3 から 3] で選ぶ
+      const offsets = [-3, -2, -1, 0, 1, 2, 3];
+      let offset = offsets[Math.floor(Math.random() * offsets.length)];
+      
       cand.push(num + offset);
     }
     
-    // 範囲ガード
     let isValid = true;
     for(let j=0; j<6; j++){
       if(cand[j] < 1 || cand[j] > 43) isValid = false;
@@ -1324,25 +1223,24 @@ function predictPatternC2(data, pA = null, pB = null) {
     if (uniqueCand.length !== 6) continue;
     cand.sort((a, b) => a - b);
 
-    // ── 3. スコアリング（確率要素なし） ──
     const currentTotal = cand.reduce((a, b) => a + b, 0);
     const diff = Math.abs(predictedTotal - currentTotal);
     
-    // ① 合計値スコア（目標に近いほど高得点）
     const sumScore = Math.max(0, 100 - (diff * 3)); 
 
-    // ② 連番ソフトスコア（期待値に合わせる）
     const pairs = getPairs(cand);
     let pairMult = 1.0;
     if (pairs === 0) pairMult = 0.88;
-    else if (pairs === 1) pairMult = 1.0;  // 連番1組を最優先
+    else if (pairs === 1) pairMult = 1.0; 
     else if (pairs === 2) pairMult = 0.92;
     else pairMult = 0.5;
 
-    // 合計スコア（確率スコアを掛け合わせない）
-    const totalScore = sumScore * pairMult;
+    // ★追加: Aと全く同じ数字（4個以上一致）になったら大減点する差別化スコア
+    const matchWithA = cand.filter(n => baseNums.includes(n)).length;
+    const diffPenalty = matchWithA >= 4 ? 50 : 0; 
 
-    // スコアが同点に近い場合は、後のものが上書きされる（実質的なランダム性）
+    const totalScore = (sumScore * pairMult) - diffPenalty;
+
     if (totalScore >= maxScore) {
       maxScore = totalScore;
       bestNums = cand;
@@ -1364,7 +1262,7 @@ function predictPatternC2(data, pA = null, pB = null) {
     coveredZones: cov,
     pattern: "C2",
     label: "パターン C2 (合計推移・ランダム補正)",
-    method: `A基準(±1/±4)のランダム補正から、目標合計[${predictedTotal}]と連番期待値に合致するものを抽出`
+    method: `A基準(±3)のランダム補正から目標[${predictedTotal}]と連番期待値に合致するものを抽出 (A差別化済)`
   };
 }
 
@@ -2307,7 +2205,63 @@ document.getElementById("btn-add-save").addEventListener("click", async () => {
 //   }, 50);
 // });
 
-// 予測
+// // 予測　パターンC,C2,C3を表示
+// document.getElementById("btn-predict").addEventListener("click", () => {
+//   if(STATE.data.length < 10){ showToast("データが10件以上必要です","error"); return; }
+//   const btn = document.getElementById("btn-predict");
+//   setLoading(btn, true);
+
+//   setTimeout(() => {
+//     try {
+//       // ── 1. AとBを「裏方(ベース)」として計算（画面には出さない） ──
+//       const baseA = predictRuleBased(STATE.data);
+//       const baseB = predictUltimate(STATE.data, baseA);
+
+//       // ── 2. Cシリーズの生成 ──
+//       // ① パターン C (基本の状況対応型)
+//       const pC = predictPatternC(STATE.data, baseA, baseB);
+//       pC.label = "パターン C (状況対応ハイブリッド)"; // ラベル上書き
+      
+//       // ② パターン C2 (合計値推移合致)
+//       const pC2 = predictPatternC2(STATE.data, pC);
+
+//       // ③ パターン C3 (1000回試行・最高確率)
+//       const pC3 = predictPatternC3(STATE.data, pC2);
+
+//       // ── 3. UI表示用のID割り当て ──
+//       // ※画面レイアウトを崩さないため、内部の枠IDはA, B, Cを再利用します
+//       pC.pattern = "A";   // 画面左枠に表示
+//       pC2.pattern = "B";  // 画面中央枠に表示
+//       pC3.pattern = "C";  // 画面右枠に表示
+
+//       const allPreds = [pC, pC2, pC3];
+
+//       // ── スナップショット保存 ────────
+//       const latestRound = STATE.data[STATE.data.length-1]?.round || 0;
+//       const snapshot    = PredictionHistory.save(allPreds, latestRound);
+//       showToast(
+//         `第${snapshot.targetRound}回向け予測をスナップショット保存しました`,
+//         "success",
+//         4000
+//       );
+
+//       runGarapon(allPreds, () => {
+//         renderPredictions(allPreds);
+//         document.getElementById("predict-section").style.display = "block";
+//         document.getElementById("predict-section").scrollIntoView({behavior:"smooth"});
+//         showToast("究極のCシリーズ 3パターン出力完了！", "success");
+//       });
+
+//     } catch(e) {
+//       showToast("予測エラー: " + e.message, "error");
+//       console.error(e);
+//     } finally {
+//       setLoading(btn, false);
+//     }
+//   }, 50);
+// });
+
+// 予測　パターンA,C,C2を表示
 document.getElementById("btn-predict").addEventListener("click", () => {
   if(STATE.data.length < 10){ showToast("データが10件以上必要です","error"); return; }
   const btn = document.getElementById("btn-predict");
@@ -2315,28 +2269,28 @@ document.getElementById("btn-predict").addEventListener("click", () => {
 
   setTimeout(() => {
     try {
-      // ── 1. AとBを「裏方(ベース)」として計算（画面には出さない） ──
+      // ── 1. Aを生成し、Bは「裏方」として計算のみ実行 ──
       const baseA = predictRuleBased(STATE.data);
       const baseB = predictUltimate(STATE.data, baseA);
 
       // ── 2. Cシリーズの生成 ──
       // ① パターン C (基本の状況対応型)
       const pC = predictPatternC(STATE.data, baseA, baseB);
-      pC.label = "パターン C (状況対応ハイブリッド)"; // ラベル上書き
+      pC.label = "パターン C (状況対応ハイブリッド)";
       
       // ② パターン C2 (合計値推移合致)
-      const pC2 = predictPatternC2(STATE.data, pC);
+      // ★先ほどの指摘通り、Aをベースにするように引数を修正済みです
+      const pC2 = predictPatternC2(STATE.data, baseA, baseB);
 
-      // ③ パターン C3 (1000回試行・最高確率)
-      const pC3 = predictPatternC3(STATE.data, pC2);
+      // C3 は生成しない
 
       // ── 3. UI表示用のID割り当て ──
-      // ※画面レイアウトを崩さないため、内部の枠IDはA, B, Cを再利用します
-      pC.pattern = "A";   // 画面左枠に表示
-      pC2.pattern = "B";  // 画面中央枠に表示
-      pC3.pattern = "C";  // 画面右枠に表示
+      // ミニロトと同様に、画面左から「A」「C」「C2」の順で並べる
+      baseA.pattern = "A";  // 画面左枠に表示
+      pC.pattern = "B";     // 画面中央枠に表示
+      pC2.pattern = "C";    // 画面右枠に表示
 
-      const allPreds = [pC, pC2, pC3];
+      const allPreds = [baseA, pC, pC2];
 
       // ── スナップショット保存 ────────
       const latestRound = STATE.data[STATE.data.length-1]?.round || 0;
@@ -2351,7 +2305,7 @@ document.getElementById("btn-predict").addEventListener("click", () => {
         renderPredictions(allPreds);
         document.getElementById("predict-section").style.display = "block";
         document.getElementById("predict-section").scrollIntoView({behavior:"smooth"});
-        showToast("究極のCシリーズ 3パターン出力完了！", "success");
+        showToast("ロト6 3パターン出力完了！", "success");
       });
 
     } catch(e) {
