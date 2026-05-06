@@ -6,7 +6,7 @@ exports.handler = async function (event, context) {
   const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
   const GITHUB_OWNER = process.env.GITHUB_OWNER;
   const GITHUB_REPO  = process.env.GITHUB_REPO;
-  const FILE_PATH    = "data/loto6.json";
+  const FILE_PATH    = "data/mini.json";
 
   const url = `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/contents/${FILE_PATH}`;
 
