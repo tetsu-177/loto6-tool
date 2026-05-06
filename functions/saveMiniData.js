@@ -22,7 +22,7 @@ exports.handler = async function (event, context) {
   const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
   const GITHUB_OWNER = process.env.GITHUB_OWNER;
   const GITHUB_REPO  = process.env.GITHUB_REPO;
-  const FILE_PATH    = "data/mini.json";
+  const FILE_PATH    = "mini/data/mini.json";
 
   try {
     const { data, sha } = JSON.parse(event.body);
