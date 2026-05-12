@@ -28,6 +28,10 @@ body {
   min-height: 100vh;
   line-height: 1.6;
 }
+input, textarea, select {
+  font-size: 16px; /* スマホの自動拡大防止 */
+}
+
 
 /* ── ヘッダー ── */
 header {
