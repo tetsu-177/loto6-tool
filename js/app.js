@@ -2161,62 +2161,6 @@ document.getElementById("btn-add-save").addEventListener("click", async () => {
 });
 
 // // 予測 パターンC以降を表示
-// document.getElementById("btn-predict").addEventListener("click", () => {
-//   if(STATE.data.length < 10){ showToast("データが10件以上必要です","error"); return; }
-//   const btn = document.getElementById("btn-predict");
-//   setLoading(btn, true);
-
-//   setTimeout(() => {
-//     try {
-//       // ── 1. AとBを「裏方(ベース)」として計算（画面には出さない） ──
-//       const baseA = predictRuleBased(STATE.data);
-//       const baseB = predictUltimate(STATE.data, baseA);
-
-//       // ── 2. Cシリーズの生成 ──
-//       // ① パターン C (基本の状況対応型)
-//       const pC = predictPatternC(STATE.data, baseA, baseB);
-//       pC.label = "パターン C (状況対応ハイブリッド)"; // ラベル上書き
-      
-//       // ② パターン C2 (合計値推移合致)
-//       const pC2 = predictPatternC2(STATE.data, pC);
-
-//       // ③ パターン C3 (1000回試行・最高確率)
-//       const pC3 = predictPatternC3(STATE.data, pC2);
-
-//       // ── 3. UI表示用のID割り当て ──
-//       // ※画面レイアウトを崩さないため、内部の枠IDはA, B, Cを再利用します
-//       pC.pattern = "A";   // 画面左枠に表示
-//       pC2.pattern = "B";  // 画面中央枠に表示
-//       pC3.pattern = "C";  // 画面右枠に表示
-
-//       const allPreds = [pC, pC2, pC3];
-
-//       // ── スナップショット保存 ────────
-//       const latestRound = STATE.data[STATE.data.length-1]?.round || 0;
-//       const snapshot    = PredictionHistory.save(allPreds, latestRound);
-//       showToast(
-//         `第${snapshot.targetRound}回向け予測をスナップショット保存しました`,
-//         "success",
-//         4000
-//       );
-
-//       runGarapon(allPreds, () => {
-//         renderPredictions(allPreds);
-//         document.getElementById("predict-section").style.display = "block";
-//         document.getElementById("predict-section").scrollIntoView({behavior:"smooth"});
-//         showToast("究極のCシリーズ 3パターン出力完了！", "success");
-//       });
-
-//     } catch(e) {
-//       showToast("予測エラー: " + e.message, "error");
-//       console.error(e);
-//     } finally {
-//       setLoading(btn, false);
-//     }
-//   }, 50);
-// });
-
-// 予測　パターンA,C,C2を表示
 document.getElementById("btn-predict").addEventListener("click", () => {
   if(STATE.data.length < 10){ showToast("データが10件以上必要です","error"); return; }
   const btn = document.getElementById("btn-predict");
@@ -2224,28 +2168,28 @@ document.getElementById("btn-predict").addEventListener("click", () => {
 
   setTimeout(() => {
     try {
-      // ── 1. Aを生成し、Bは「裏方」として計算のみ実行 ──
+      // ── 1. AとBを「裏方(ベース)」として計算（画面には出さない） ──
       const baseA = predictRuleBased(STATE.data);
       const baseB = predictUltimate(STATE.data, baseA);
 
       // ── 2. Cシリーズの生成 ──
       // ① パターン C (基本の状況対応型)
       const pC = predictPatternC(STATE.data, baseA, baseB);
-      pC.label = "パターン C (状況対応ハイブリッド)";
+      pC.label = "パターン C (状況対応ハイブリッド)"; // ラベル上書き
       
       // ② パターン C2 (合計値推移合致)
-      // ★先ほどの指摘通り、Aをベースにするように引数を修正済みです
-      const pC2 = predictPatternC2(STATE.data, baseA, baseB);
+      const pC2 = predictPatternC2(STATE.data, pC);
 
-      // C3 は生成しない
+      // ③ パターン C3 (1000回試行・最高確率)
+      const pC3 = predictPatternC3(STATE.data, pC2);
 
       // ── 3. UI表示用のID割り当て ──
-      // ミニロトと同様に、画面左から「A」「C」「C2」の順で並べる
-      baseA.pattern = "A";  // 画面左枠に表示
-      pC.pattern = "B";     // 画面中央枠に表示
-      pC2.pattern = "C";    // 画面右枠に表示
+      // ※画面レイアウトを崩さないため、内部の枠IDはA, B, Cを再利用します
+      pC.pattern = "A";   // 画面左枠に表示
+      pC2.pattern = "B";  // 画面中央枠に表示
+      pC3.pattern = "C";  // 画面右枠に表示
 
-      const allPreds = [baseA, pC, pC2];
+      const allPreds = [pC, pC2, pC3];
 
       // ── スナップショット保存 ────────
       const latestRound = STATE.data[STATE.data.length-1]?.round || 0;
@@ -2260,7 +2204,7 @@ document.getElementById("btn-predict").addEventListener("click", () => {
         renderPredictions(allPreds);
         document.getElementById("predict-section").style.display = "block";
         document.getElementById("predict-section").scrollIntoView({behavior:"smooth"});
-        showToast("ロト6 3パターン出力完了！", "success");
+        showToast("究極のCシリーズ 3パターン出力完了！", "success");
       });
 
     } catch(e) {
@@ -2271,6 +2215,62 @@ document.getElementById("btn-predict").addEventListener("click", () => {
     }
   }, 50);
 });
+
+// 予測　パターンA,C,C2を表示
+// document.getElementById("btn-predict").addEventListener("click", () => {
+//   if(STATE.data.length < 10){ showToast("データが10件以上必要です","error"); return; }
+//   const btn = document.getElementById("btn-predict");
+//   setLoading(btn, true);
+
+//   setTimeout(() => {
+//     try {
+//       // ── 1. Aを生成し、Bは「裏方」として計算のみ実行 ──
+//       const baseA = predictRuleBased(STATE.data);
+//       const baseB = predictUltimate(STATE.data, baseA);
+
+//       // ── 2. Cシリーズの生成 ──
+//       // ① パターン C (基本の状況対応型)
+//       const pC = predictPatternC(STATE.data, baseA, baseB);
+//       pC.label = "パターン C (状況対応ハイブリッド)";
+      
+//       // ② パターン C2 (合計値推移合致)
+//       // ★先ほどの指摘通り、Aをベースにするように引数を修正済みです
+//       const pC2 = predictPatternC2(STATE.data, baseA, baseB);
+
+//       // C3 は生成しない
+
+//       // ── 3. UI表示用のID割り当て ──
+//       // ミニロトと同様に、画面左から「A」「C」「C2」の順で並べる
+//       baseA.pattern = "A";  // 画面左枠に表示
+//       pC.pattern = "B";     // 画面中央枠に表示
+//       pC2.pattern = "C";    // 画面右枠に表示
+
+//       const allPreds = [baseA, pC, pC2];
+
+//       // ── スナップショット保存 ────────
+//       const latestRound = STATE.data[STATE.data.length-1]?.round || 0;
+//       const snapshot    = PredictionHistory.save(allPreds, latestRound);
+//       showToast(
+//         `第${snapshot.targetRound}回向け予測をスナップショット保存しました`,
+//         "success",
+//         4000
+//       );
+
+//       runGarapon(allPreds, () => {
+//         renderPredictions(allPreds);
+//         document.getElementById("predict-section").style.display = "block";
+//         document.getElementById("predict-section").scrollIntoView({behavior:"smooth"});
+//         showToast("ロト6 3パターン出力完了！", "success");
+//       });
+
+//     } catch(e) {
+//       showToast("予測エラー: " + e.message, "error");
+//       console.error(e);
+//     } finally {
+//       setLoading(btn, false);
+//     }
+//   }, 50);
+// });
 
 
 // モーダル外クリックで閉じる
