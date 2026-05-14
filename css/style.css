@@ -323,6 +323,7 @@ main {
 .form-group { display: flex; flex-direction: column; gap: 4px; }
 .form-group label { font-size: 0.75rem; color: var(--text2); }
 .form-group input {
+  width: 100%;
   background: var(--bg3);
   border: 1px solid var(--border);
   border-radius: 6px;
