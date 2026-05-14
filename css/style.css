@@ -29,7 +29,6 @@ body {
   line-height: 1.6;
 }
 
-
 /* ── ヘッダー ── */
 header {
   background: var(--bg2);
@@ -329,7 +328,7 @@ main {
   border-radius: 6px;
   color: var(--text);
   padding: 8px 10px;
-  font-size: 0.9rem;
+  font-size: 16px;
   outline: none;
   transition: border-color 0.2s;
 }
@@ -344,7 +343,7 @@ main {
   border-radius: 8px;
   color: var(--text);
   padding: 10px 14px;
-  font-size: 0.9rem;
+  font-size: 16px;
   outline: none;
 }
 .list-search-bar input:focus { border-color: var(--accent); }
